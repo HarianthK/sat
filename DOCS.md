@@ -178,7 +178,8 @@ At these small sizes most random formulas at 4.26 are satisfiable (269 of 330):
 the 50% point sits higher for small n and moves to 4.26 as n grows.
 
 Then each check was shown to fail. A script copied the solver, broke one thing,
-ran the tests, and put it back. 25 breakages, each one alone:
+ran the tests, and put it back. 25 breakages, each one alone (ten more for
+deletion are further down):
 
 | breakage | what caught it |
 | --- | --- |
@@ -233,9 +234,139 @@ The solver itself passed every test on its first run, so there is no bug story t
 tell from writing it. The breakages are the evidence that the tests would have
 told me if there had been one.
 
+## Deleting learned clauses
+
+Every conflict adds a clause, and until now none ever left. Each one sits in two
+watch lists, so a propagation that walks a list walks past all of them. Now, every
+so many conflicts, the solver deletes about half of what it has learned.
+
+### Which half: LBD
+
+I score each learned clause by its LBD, literal block distance, from Glucose
+(Audemard and Simon, 2009): the number of distinct decision levels among its
+literals, counted when it is learned. A clause with LBD 2 has the asserting
+literal and one other level, so once that level's decisions are back it forces
+the literal straight away. Glucose calls these glue clauses, and they are never
+deleted here. Everything else is sorted by LBD, and from the worse half every
+clause that may go, goes.
+
+I picked LBD over clause activity (bumping a clause each time it takes part in a
+conflict) because it costs one number per clause, set once, and needs nothing
+during the search. Glucose also lowers a clause's LBD when it is used again; I
+left that out to keep it simple.
+
+The schedule is Glucose 3's: the first reduction at 2,000 conflicts, and each
+interval 300 longer than the one before. The interval has to grow, or the solver
+could keep deleting the clauses it needs to finish and go round forever.
+`reduce_first=None` turns deletion off, and so does `--keep`.
+
+### What "locked" means
+
+A clause is locked while it is the reason for an assigned literal. Conflict
+analysis reads the reasons, so a reduction leaves those alone, and they become
+fair game once the literal is unassigned. Original clauses are never touched:
+deleting one changes the formula.
+
+Deleting a locked clause anyway turned out to be harmless here, and I checked:
+every answer stayed right. In Python the `reason` array still points at the
+clause, so the object lives on and analysis can read it. In C the memory would
+be freed and reused, which is why solvers there are strict about it. I kept the
+rule, and the test still checks it.
+
+### Measured
+
+With and without deletion, in one Python process, the two versions alternating,
+median of five runs (three for 9 into 8). The solver is deterministic, so
+conflicts and peak do not vary between runs; only time does. Peak is the most
+learned clauses held at once.
+
+| instance | answer | conflicts, kept | conflicts, deleted | peak, kept | peak, deleted | reductions | time, kept | time, deleted |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| random 3-SAT, 175 variables, a | UNSAT | 6,925 | 5,632 | 6,924 | 3,302 | 2 | 3.43s | 1.94s |
+| random 3-SAT, 175 variables, b | UNSAT | 6,992 | 6,730 | 6,991 | 4,076 | 2 | 2.99s | 2.37s |
+| random 3-SAT, 200 variables, a | SAT | 14,174 | 16,751 | 14,174 | 6,365 | 6 | 10.85s | 8.22s |
+| random 3-SAT, 200 variables, b | SAT | 7,852 | 13,750 | 7,852 | 5,721 | 5 | 3.78s | 6.13s |
+| random 3-SAT, 200 variables, c | UNSAT | 23,348 | 25,194 | 23,347 | 7,597 | 8 | 23.32s | 11.26s |
+| pigeonhole 8 into 7 | UNSAT | 3,654 | 3,829 | 3,653 | 2,828 | 1 | 1.77s | 1.60s |
+| pigeonhole 9 into 8 | UNSAT | 49,555 | 26,647 | 49,554 | 7,594 | 8 | 223.7s | 18.6s |
+
+The random formulas are 4.26 clauses per variable from `random.Random(1)`: the
+first and third of 175 variables (the second was easy), then three of 200.
+
+Deletion did not save conflicts in general. It saved some on three of these and
+cost some on four, up to 75% more on the second 200-variable formula, which was
+also the one where it was slower overall (6.13s against 3.78s). What it did
+every time was hold far fewer clauses, 1.3 to 6.5 times fewer at the peak, and
+each conflict got cheaper. Pigeonhole 9 into 8 shows it most: 4.5 ms per
+conflict with every clause kept, 0.70 ms with deletion, and 12 times faster in
+total. The longer a run goes, the more the kept clauses fill the watch lists, so
+short runs see little of this. I have not profiled where the time goes; the
+watch lists are my explanation, not a measurement.
+
+Pigeonhole 9 into 8 also needed fewer conflicts with deletion, 26,647 against
+49,555. I do not know why. A smaller clause database changes which clauses
+propagate first and so every later decision; one formula is not enough to say
+more.
+
+### How it is checked
+
+The tests run every solve through a subclass whose `reduce` checks, after every
+reduction, from outside the solver:
+
+- no original clause is gone, and no clause that was a reason is gone;
+- no glue clause is gone, and every deleted clause has an LBD at least as high
+  as every clause that could have gone and stayed;
+- at least half the learned clauses went, less those that had to stay;
+- every original and kept clause sits in exactly the watch lists of its first
+  two literals, once each, and no list holds anything else;
+- the stored LBDs match LBDs it computes itself, with levels taken from the
+  trail and the decision points instead of the solver's level array;
+- the interval to the next reduction is longer than the last one.
+
+Those tests use a schedule far more eager than the solver's (first reduction at
+10 conflicts, each interval 5 longer), so that even the four-variable formulas
+reduce, and every answer in the file (brute force, pigeonhole, queens counts,
+sudoku) is checked with deletion running: 1,479 reductions and 94,121 deleted
+clauses in one run. Two 200-variable formulas also run on the real schedule,
+through 11 reductions, and their models are checked clause by clause. The whole
+test took 33 and 43 seconds on two runs.
+
+The eager schedule makes pigeonhole 8 into 7 take 23,652 conflicts instead of
+3,829. Deleting that often throws away clauses the proof still needs.
+
+Ten breakages, each alone, all caught:
+
+| breakage | what caught it |
+| --- | --- |
+| deleting locked clauses | a reason clause deleted |
+| deleting one original clause each round | the watch lists check |
+| a deleted clause left in one of its two watch lists | the watch lists check |
+| deleted clauses left in every watch list | the watch lists check |
+| never deleting anything | "deleted 0 of 11" |
+| LBD from variables instead of levels | stored LBDs are not the number of levels |
+| glue clauses deleted too | a glue clause deleted |
+| deleting the better half | kept a worse clause than one deleted |
+| the LBD list not pruned with the clauses | stored LBDs are not the number of levels |
+| the interval never growing | the interval went from 10 to 10 |
+
+All of them were caught by the reduction checks, so I ran four again with those
+checks switched off, leaving only the answers to catch them:
+
+- Deleting an original clause gave a wrong model on pigeonhole 5 into 4.
+- Deleting locked clauses passed everything, for the reason above.
+- Never deleting, and leaving deleted clauses in every watch list, both gave
+  right answers everywhere. Both are sound: a clause left watched is still
+  implied by the formula. Each run failed only on the count of reductions on
+  the real schedule (8, not the 10 required), because the search went
+  differently.
+
+So the answers alone would have missed three of the four. That is why the
+invariants are checked directly.
+
 ## What is not here
 
-Learned clauses are never deleted, so memory grows with conflicts; at Python's
-speed that has not mattered yet, and it is the next thing a larger instance would
-need. There is no clause minimization (removing literals implied by others in the
-learned clause) and no preprocessing.
+The tables before the deletion section were measured before deletion existed.
+I have not rerun them; pigeonhole 8 into 7, for one, now takes 3,829
+conflicts instead of 3,654. There is no clause minimization (removing
+literals implied by others in the learned clause), no LBD update when a clause
+is used again, and no preprocessing.

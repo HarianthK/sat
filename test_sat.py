@@ -1,4 +1,5 @@
 # Run: python test_sat.py. Every SAT answer is checked clause by clause; every UNSAT one against brute force or mathematics.
+import bisect
 import faulthandler
 import os
 import random
@@ -41,9 +42,52 @@ def random_3sat(rng, nvars, nclauses):
     return [[v if rng.random() < 0.5 else -v for v in rng.sample(range(1, nvars + 1), 3)] for _ in range(nclauses)]
 
 
+class Checked(sat.Solver):
+    # Checks every reduction from outside: what was deleted, what stayed, and every watch list.
+    rounds = deleted = 0
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.originals = list({id(c): c for w in self.watches for c in w}.values())
+        self.true_lbd = {}  # id -> (clause, LBD); holding the clause keeps its id unique
+        self.gap = 0
+
+    def analyze(self, conflict):
+        # LBD again, with levels read off the trail and decision points instead of the solver's level array.
+        learnt, back = super().analyze(conflict)
+        where = {abs(l): i for i, l in enumerate(self.trail)}
+        self.true_lbd[id(learnt)] = learnt, len({bisect.bisect_right(self.limits, where[abs(l)]) for l in learnt})
+        return learnt, back
+
+    def reduce(self):
+        lbd = lambda c: self.true_lbd[id(c)][1]
+        assert self.lbds == [lbd(c) for c in self.learnts], "stored LBDs are not the number of levels"
+        before = list(self.learnts)
+        locked = {id(self.reason[abs(l)]) for l in self.trail if self.reason[abs(l)] is not None}
+        super().reduce()
+        gap, self.gap = self.gap, self.next_reduce - self.stats["conflicts"]
+        assert self.gap > gap, f"the interval between reductions went from {gap} to {self.gap}, not up"
+        alive = {id(c) for c in self.learnts}
+        assert alive <= {id(c) for c in before}, "a clause appeared during a reduction"
+        removed = [c for c in before if id(c) not in alive]
+        assert not any(id(c) in locked for c in removed), "deleted a clause that is the reason for an assignment"
+        assert all(lbd(c) > 2 for c in removed), "deleted a glue clause"
+        free = [lbd(c) for c in self.learnts if lbd(c) > 2 and id(c) not in locked]
+        assert not removed or not free or min(map(lbd, removed)) >= max(free), "kept a worse clause than one deleted"
+        protected = sum(lbd(c) <= 2 or id(c) in locked for c in before)
+        assert len(removed) >= len(before) // 2 - protected, f"deleted {len(removed)} of {len(before)}"
+        # Every original and kept clause is watched exactly at its first two literals, and nothing else is.
+        live = self.originals + [c for c in self.learnts if len(c) > 1]
+        want = sorted((id(c), c[j] + self.n) for c in live for j in (0, 1))
+        have = sorted((id(c), i) for i, w in enumerate(self.watches) for c in w)
+        assert have == want, "the watch lists do not match the clauses that should be there"
+        Checked.rounds += 1
+        Checked.deleted += len(removed)
+
+
 def run(nvars, clauses, label):
-    # Both solvers; a model from either must satisfy every clause.
-    solver = sat.Solver(nvars, clauses)
+    # Every run deletes clauses far more often than the solver does, so the small formulas reduce too.
+    solver = Checked(nvars, clauses, reduce_first=10, reduce_inc=5)
     model = solver.solve(BUDGET)
     if model is not None:
         assert satisfies(model, nvars, clauses), f"{label}: CDCL's model breaks a clause"
@@ -128,7 +172,8 @@ for n in range(1, 8):
     assert model is not None, f"could not fit {n} pigeons into {n} holes"
     holes = [h for p in range(n) for h in range(n) if p * n + h + 1 in set(model)]
     assert sorted(holes) == list(range(n)), f"{n} pigeons: holes {holes}"
-print(f"pigeonhole: n+1 into n refused for n = 1 to 7 ({stats['conflicts']} conflicts for 8 into 7), n into n placed")
+print(f"pigeonhole: n+1 into n refused for n = 1 to 7 ({stats['conflicts']} conflicts for 8 into 7, deleting every few), "
+      "n into n placed")
 
 
 # N-queens: impossible for 2 and 3, possible from 4 up. The board is checked as a board, not as clauses.
@@ -234,6 +279,21 @@ for trial in range(3):
 assert spent < 4000, f"three 125-variable formulas took {spent} conflicts"
 print(f"three 125-variable random formulas in {spent} conflicts")
 
+# The solver's own schedule (first reduction at 2,000 conflicts) on two 200-variable formulas of
+# 13,000 to 17,000 conflicts, checked at every reduction, and their models checked clause by clause.
+rng = random.Random(1)
+for _ in range(3):
+    random_3sat(rng, 175, 746)  # skipped: these two are the ones measured in DOCS.md
+long_rounds = 0
+for trial in range(2):
+    clauses = random_3sat(rng, 200, 852)
+    s = Checked(200, clauses)
+    model = s.solve(BUDGET)
+    assert model is not None and satisfies(model, 200, clauses), f"200 variables #{trial}: no valid model"
+    long_rounds += s.stats["reductions"]
+assert long_rounds >= 10, f"only {long_rounds} reductions on the default schedule"
+print(f"two 200-variable formulas satisfied on the default schedule, through {long_rounds} reductions")
+
 # The command line, in SAT competition form: s and v lines, exit 10 or 20, and c lines with --stats.
 nvars, clauses = sat.queens(6)
 with open("t-sat.cnf", "w") as f:
@@ -250,7 +310,7 @@ try:
         assert out.returncode == 10 and "s SATISFIABLE" in lines, out
         lits = [int(t) for line in lines if line.startswith("v ") for t in line.split()[1:]]
         assert lits[-1] == 0 and satisfies(lits[:-1], nvars, clauses), "the v lines do not satisfy the file"
-        for key in ("decisions", "conflicts", "propagations", "time") + (() if flags else ("learned",)):
+        for key in ("decisions", "conflicts", "propagations", "time") + (() if flags else ("learned", "deleted")):
             assert any(line.startswith(f"c {key} ") for line in lines), f"--stats {flags} printed no {key}"
     out = subprocess.run([sys.executable, sat.__file__, "t-unsat.cnf"], capture_output=True, text=True)
     assert out.returncode == 20 and out.stdout.splitlines() == ["s UNSATISFIABLE"], out
@@ -261,4 +321,5 @@ finally:
         os.remove(name)
 print("the command line prints s and v lines, exits 10 or 20, and refuses a bad file")
 
+print(f"{Checked.rounds} reductions checked, {Checked.deleted} learned clauses deleted, every answer still right")
 print(f"ok, in {time.perf_counter() - started:.1f}s")

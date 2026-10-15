@@ -1,5 +1,5 @@
-# A CDCL SAT solver: two watched literals, first-UIP learning, backjumping, VSIDS and Luby restarts.
-# Run: python sat.py FILE.cnf [--stats] [--dpll], or python sat.py --queens N, or --sudoku 81-CHARS
+# A CDCL SAT solver: watched literals, first-UIP learning, backjumping, VSIDS, Luby restarts, LBD deletion.
+# Run: python sat.py FILE.cnf [--stats] [--dpll] [--keep], or --queens N, or --sudoku 81-CHARS
 import argparse
 import heapq
 import sys
@@ -50,7 +50,7 @@ def luby(i):
 
 class Solver:
     # Literals are signed ints; per-literal arrays are indexed by literal + n.
-    def __init__(self, nvars, clauses, decay=0.95, restart_unit=100):
+    def __init__(self, nvars, clauses, decay=0.95, restart_unit=100, reduce_first=2000, reduce_inc=300):
         n = self.n = nvars
         self.val = [0] * (2 * n + 1)  # 1 true, -1 false, 0 unassigned
         self.watches = [[] for _ in range(2 * n + 1)]  # clauses watching each literal
@@ -62,8 +62,10 @@ class Solver:
         self.bump_by, self.decay, self.restart_unit = 1.0, decay, restart_unit
         self.phase = [False] * (n + 1)
         self.heap = [(0.0, v) for v in range(1, n + 1)]
-        self.learnts = []
-        self.stats = dict(decisions=0, conflicts=0, propagations=0, learned=0, restarts=0)
+        self.learnts, self.lbds = [], []  # lbds[i] is the LBD of learnts[i]
+        self.reduce_every, self.reduce_inc = reduce_first, reduce_inc  # reduce_first=None keeps every clause
+        self.next_reduce = reduce_first
+        self.stats = dict(decisions=0, conflicts=0, propagations=0, learned=0, restarts=0, reductions=0, deleted=0)
         self.ok = True
         for c in clauses:
             self.add(c)
@@ -188,6 +190,22 @@ class Solver:
                 return v if self.phase[v] else -v
         return None
 
+    def reduce(self):
+        # Of the worse half by LBD, delete all but glue clauses (LBD 2 or less) and reasons. DOCS.md says why.
+        self.reduce_every += self.reduce_inc
+        self.next_reduce = self.stats["conflicts"] + self.reduce_every
+        locked = {id(self.reason[abs(l)]) for l in self.trail}
+        order = sorted(range(len(self.learnts)), key=lambda i: -self.lbds[i])
+        gone = {i for i in order[:len(order) // 2] if self.lbds[i] > 2 and id(self.learnts[i]) not in locked}
+        dead = [self.learnts[i] for i in gone]
+        ids, n = {id(c) for c in dead}, self.n
+        for w in {c[0] + n for c in dead} | {c[1] + n for c in dead}:
+            self.watches[w] = [c for c in self.watches[w] if id(c) not in ids]
+        self.learnts = [c for i, c in enumerate(self.learnts) if i not in gone]
+        self.lbds = [b for i, b in enumerate(self.lbds) if i not in gone]
+        self.stats["reductions"] += 1
+        self.stats["deleted"] += len(gone)
+
     def solve(self, max_conflicts=None):
         if not self.ok:
             return None
@@ -202,6 +220,7 @@ class Solver:
                 if max_conflicts and stats["conflicts"] > max_conflicts:
                     raise RuntimeError(f"gave up after {max_conflicts} conflicts")
                 learnt, back = self.analyze(conflict)
+                self.lbds.append(len({self.level[abs(l)] for l in learnt}))  # before the jump changes levels
                 self.backtrack(back)
                 self.learnts.append(learnt)
                 stats["learned"] += 1
@@ -215,6 +234,8 @@ class Solver:
                 restarts += 1
                 since = 0
                 self.backtrack(0)
+            elif self.next_reduce and stats["conflicts"] >= self.next_reduce:
+                self.reduce()
             else:
                 lit = self.pick()
                 if lit is None:
@@ -280,13 +301,13 @@ def dpll(nvars, clauses, stats=None):
     return [v if assign.get(v, False) else -v for v in range(1, nvars + 1)]
 
 
-def solve(nvars, clauses, method="cdcl", max_conflicts=None):
+def solve(nvars, clauses, method="cdcl", max_conflicts=None, keep=False):
     start = time.perf_counter()
     if method == "dpll":
         stats = {}
         model = dpll(nvars, clauses, stats)
     else:
-        solver = Solver(nvars, clauses)
+        solver = Solver(nvars, clauses, reduce_first=None) if keep else Solver(nvars, clauses)
         model = solver.solve(max_conflicts)
         stats = solver.stats
     stats["time"] = time.perf_counter() - start
@@ -334,6 +355,7 @@ def main():
     ap.add_argument("file", nargs="?", help="a DIMACS CNF file")
     ap.add_argument("--stats", action="store_true", help="print decisions, conflicts and time as c lines")
     ap.add_argument("--dpll", action="store_true", help="use the plain DPLL solver instead")
+    ap.add_argument("--keep", action="store_true", help="never delete learned clauses")
     ap.add_argument("--queens", type=int, metavar="N", help="place N queens on an N by N board")
     ap.add_argument("--sudoku", metavar="GRID", help="81 characters, '.' or '0' for blanks")
     args = ap.parse_args()
@@ -351,9 +373,9 @@ def main():
             sys.exit(f"sat: {args.file}: {e}")
     else:
         ap.error("give a CNF file, --queens or --sudoku")
-    model, stats = solve(nvars, clauses, "dpll" if args.dpll else "cdcl")
+    model, stats = solve(nvars, clauses, "dpll" if args.dpll else "cdcl", keep=args.keep)
     if args.stats:
-        for key in ("decisions", "conflicts", "propagations", "learned", "restarts"):
+        for key in ("decisions", "conflicts", "propagations", "learned", "restarts", "deleted"):
             if key in stats:
                 print(f"c {key} {stats[key]}")
         print(f"c time {stats['time']:.3f}s")

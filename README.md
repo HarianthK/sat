@@ -10,6 +10,7 @@ variables that make every clause true, or says that none exist.
     c propagations 285
     c learned 14
     c restarts 0
+    c deleted 0
     c time 0.002s
     s SATISFIABLE
     c . . . . . . . Q
@@ -40,6 +41,10 @@ why as a new clause, so it never walked into that one again.
   older bumps decaying by 5% per conflict. The last value of each variable is
   remembered and reused (phase saving).
 - Restarts on the Luby sequence, 100 conflicts times 1, 1, 2, 1, 1, 2, 4, ...
+- Learned clause deletion, as in Glucose: every so many conflicts (2,000 at
+  first, 300 more each time) the worse half by LBD goes, except clauses with
+  LBD 2 or less and clauses that are the reason for an assignment. `--keep`
+  turns it off.
 - A plain DPLL solver too, `--dpll`, kept for comparison.
 - Answers in SAT competition form: `s` and `v` lines, exit status 10 or 20.
 - Two encoders for fun: N-queens and Sudoku.
@@ -60,16 +65,30 @@ Python process, median of five runs:
 
 On random formulas CDCL needs 6 to 48 times fewer conflicts here, and the gap
 grows with size. Pigeonhole stays hard for both, which is the point of it;
-DOCS.md says why.
+DOCS.md says why. This table was measured before clause deletion; with it, 8
+pigeons into 7 holes takes 3,829 conflicts.
+
+Deletion, against keeping every clause, in one process, alternating, median of
+five runs (three for 9 into 8):
+
+| instance | conflicts, kept | conflicts, deleted | peak clauses, kept | peak clauses, deleted | time, kept | time, deleted |
+| --- | --- | --- | --- | --- | --- | --- |
+| random 3-SAT, 200 variables, UNSAT | 23,348 | 25,194 | 23,347 | 7,597 | 23.32s | 11.26s |
+| random 3-SAT, 200 variables, SAT | 7,852 | 13,750 | 7,852 | 5,721 | 3.78s | 6.13s |
+| 9 pigeons, 8 holes | 49,555 | 26,647 | 49,554 | 7,594 | 223.7s | 18.6s |
+
+It holds far fewer clauses, so each conflict is cheaper, but it does not always
+save conflicts, and on the second formula it was slower. DOCS.md has seven
+instances and how deletion is checked.
 
 ## Running it
 
-    python sat.py FILE.cnf [--stats] [--dpll]
+    python sat.py FILE.cnf [--stats] [--dpll] [--keep]
     python sat.py --queens N
     python sat.py --sudoku 8..........36......7..9.2...5...7.......457.....1...3...1....68..85...1..9....4..
     python test_sat.py
 
 ## Notes
 
-[DOCS.md](DOCS.md) is what writing it taught me, including the 25 ways I broke
+[DOCS.md](DOCS.md) is what writing it taught me, including the 35 ways I broke
 it on purpose and which check caught each one.
