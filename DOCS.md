@@ -363,10 +363,183 @@ checks switched off, leaving only the answers to catch them:
 So the answers alone would have missed three of the four. That is why the
 invariants are checked directly.
 
+## Minimizing learned clauses
+
+First-UIP analysis stops as soon as one literal of the conflict level is left.
+It does nothing about the lower levels: whatever literals from them it met on
+the way go into the clause as they are. Some of those are redundant. Now, after
+analysis, the solver removes them, the way MiniSat does (Sorensson and Biere,
+"Minimizing Learned Clauses", 2009). `minimize=False` turns it off, and so does
+`--no-minimize`.
+
+### What makes a literal redundant
+
+Every literal in a learned clause is false. Take one, `q`, that was forced: its
+reason clause had every other literal false, and that is why `q` went false.
+If each of those other literals is also in the learned clause, then the rest of
+the clause already says `q` is false, and `q` adds nothing. Drop it and the
+clause says the same thing, shorter.
+
+A decision is never redundant. Nothing forced it, so nothing else in the clause
+implies it.
+
+### Why the check recurses
+
+Asking only "is every reason literal in the clause?" misses most of them. A
+reason literal that is not in the clause can still follow from the clause: its
+own reason may be covered, or its reason's reason. So the check walks back
+through reasons, depth first, and a literal goes when every path from it ends
+at a literal of the clause or at level 0. Python's recursion limit is 1,000 and
+a chain of reasons can be as long as the trail, so `redundant` keeps its own
+stack instead of calling itself.
+
+Removing several literals at once is safe because reasons only point back along
+the trail. Each removed literal follows from literals assigned before it, and
+by induction from the ones that stay.
+
+### The abstract-level trick
+
+Most walks fail, and the shortcut is about failing fast. Before the walk, the
+solver ORs together one bit per decision level in the clause (the level modulo
+64). A literal at a level whose bit is not set can be given up on at once. The
+reason it is safe: propagation runs to a fixed point before every decision, so
+a literal forced at level L has another level-L literal in its reason. Follow
+that back and you reach the decision of level L, which cannot be removed. If no
+literal of level L is in the clause, no literal of level L can follow from it.
+The modulo means two levels can share a bit, so the test lets through some
+literals that will fail anyway, never one that would pass.
+
+The same argument says something I did not expect. The earliest literal of the
+clause at each level can never be removed: following its reasons back only
+meets literals of that level from earlier on the trail, none of them in the
+clause, down to the decision. So minimizing never empties a level. The backjump
+level and the LBD come out the same before and after, every time. The solver
+still takes both from the minimized clause, and the test now checks the claim
+on every conflict it runs.
+
+The memo stores what each walk found. A variable whose walk succeeded is
+removable for the rest of this clause; when a walk fails, every variable on the
+path to the failure needed the failing one, so they are all marked not
+removable. The memo starts empty for each learned clause.
+
+### Measured
+
+With and without minimization, in one Python process, the two versions
+alternating, median of five runs. The search is deterministic, so conflicts and
+lengths do not vary between runs; only time does. Length is the average learned
+clause length; for the minimized runs, "before" is what first-UIP gave and
+"after" is what was learned.
+
+| instance | answer | conflicts, off | length, off | time, off | conflicts, on | length before, on | length after, on | literals removed | time, on |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| random 3-SAT, 100 variables, a | SAT | 320 | 9.1 | 0.05s | 332 | 8.7 | 6.8 | 622 | 0.07s |
+| random 3-SAT, 100 variables, b | SAT | 177 | 8.2 | 0.02s | 130 | 8.4 | 7.5 | 120 | 0.01s |
+| random 3-SAT, 150 variables, a | SAT | 1,922 | 12.3 | 0.53s | 1,794 | 11.2 | 9.0 | 3,959 | 0.50s |
+| random 3-SAT, 150 variables, b | UNSAT | 1,480 | 10.9 | 0.40s | 1,308 | 10.0 | 7.4 | 3,405 | 0.41s |
+| random 3-SAT, 200 variables, a | SAT | 3,332 | 14.6 | 1.19s | 5,164 | 14.0 | 11.3 | 13,729 | 2.14s |
+| random 3-SAT, 200 variables, b | SAT | 6,577 | 15.7 | 2.40s | 25,918 | 15.0 | 11.7 | 85,993 | 12.94s |
+| pigeonhole 8 into 7 | UNSAT | 3,829 | 18.9 | 1.53s | 3,271 | 18.0 | 15.3 | 8,954 | 1.11s |
+| pigeonhole 9 into 8 | UNSAT | 26,647 | 25.9 | 22.26s | 35,148 | 26.2 | 22.0 | 148,197 | 29.49s |
+| 20 queens | SAT | 105 | 88.9 | 0.03s | 120 | 84.3 | 83.4 | 104 | 0.03s |
+| 40 queens | SAT | 206 | 201.7 | 0.13s | 194 | 215.8 | 214.4 | 277 | 0.17s |
+
+The random formulas are 4.26 clauses per variable from `random.Random(3)`, the
+first two of each size. The script that ran this is not in the repository.
+
+Minimization did what it says: it removed 11 to 26% of the literals of each
+learned clause on the random formulas and 15 to 16% on pigeonhole. On queens it
+removed about 1%. It did not make the solver faster here. It took fewer
+conflicts on five of the ten and more on five, and the second 200-variable
+formula went from 6,577 conflicts to 25,918. Over all ten it took 46.9 seconds
+against 28.5 without. Time per conflict hardly moved (0.84 ms on pigeonhole 9
+into 8 both ways), so the cost is not the walk itself; it is that a different
+clause sends the search somewhere else, and on these formulas the somewhere
+else was as often worse as better. That is my reading of the per-conflict
+numbers, not a profile. Runs under a tenth of a second are too noisy to read
+anything from.
+
+So the honest finding is: shorter clauses every time, no gain in conflicts or
+time on these small instances. The paper reports gains on industrial formulas,
+which I have none of.
+
+### How it is checked
+
+The test subclass that checks reductions now also checks every minimization,
+on every conflict of every solve it runs:
+
+- the minimized clause is a subset of the first-UIP clause, with the same
+  asserting literal first;
+- it still has exactly one literal at the conflict level, with levels read off
+  the trail, not the solver's level array;
+- it has the same set of levels as before, which is the claim above;
+- the backjump goes to the highest level among the other literals;
+- it is exactly the clause a second method gives. That method shares no code
+  with `redundant`: one pass forward along the trail collects every variable
+  that follows from the clause (a variable follows if it is in the clause, at
+  level 0, or its reason's other variables all follow), and a literal goes
+  exactly when all of its reason follows. No stack, no memo, no level bits;
+  since reasons point back along the trail, one pass is enough.
+
+Soundness is checked apart from all of that: on the 330 brute-force formulas
+every clause ever learned, including the ones deleted along the way, must hold
+in every model. Before this the check only looked at the clauses still kept at
+the end, so with deletion it missed most of them. The command line is checked
+to print a nonzero `c minimized` count normally and 0 with `--no-minimize`.
+
+The whole test took 43, 50 and 43 seconds on three runs with these checks. With
+minimization the two 200-variable formulas on the real schedule take 15,653
+and 8,044 conflicts instead of 16,751 and 13,750, and go through 8 reductions
+instead of 11, so that check now asks for 6.
+
+Fourteen breakages, each alone, run on a copy:
+
+| breakage | what caught it |
+| --- | --- |
+| a literal removed when only the first of its reason's literals is covered | the second method: `[-5, 2]`, should be `[-5, 2, -3]` |
+| no recursion: reason literals must be in the clause itself | the second method: removed too little |
+| abstract levels shifted by one | the second method: removed too little |
+| abstract levels letting everything through | passed, see below |
+| the memo marking a failed path removable | the second method: removed too much |
+| the memo kept from one clause to the next | the second method: removed too much |
+| the asserting literal dropped | the subset check: `[2, 1]` minimized to `[1]` |
+| backjump level taken from the clause before minimizing | passed, see below |
+| the second watched literal picked before minimizing | jumped to 1 with `[4, 1, 2]` at levels `[3, 1, 2]` |
+| every literal at the level of the clause's last literal dropped | minimizing `[2, 1]` to `[2]` emptied a level |
+| `seen` not cleared for removed literals | UNSAT where brute force found a model |
+| level 0 literals not skipped in the walk | the second method: removed too little |
+| minimization never run | the command-line count |
+| `--no-minimize` not passed through | the command-line count |
+
+Two passed, and both are correct code:
+
+- Letting every level through the shortcut only makes failing walks longer.
+  The answers and the removed literals are the same, and the test took 52
+  seconds against 43 unbroken.
+- Taking the backjump level from the clause before minimizing gives the same
+  number, because no level is ever emptied. The level check now states that
+  directly. The real version of this bug is picking the second watched literal
+  before minimizing: it can be a literal that then goes, and the clause ends up
+  watching a lower level. The backjump check caught that one.
+
+The second method catches most of them, so I ran the four unsound ones again
+with it switched off, leaving the answers and the soundness check:
+
+- Removing a literal whose reason is not covered: learned `[6, 4, 3]` on a
+  10-variable formula, not implied.
+- The memo marking a failed path removable, and the memo kept between clauses:
+  both found 3 solutions to 6 queens, not 4.
+- Dropping the asserting literal: still the subset check, which does not depend
+  on the second method.
+
+So the soundness check and the solution counts would have caught each unsound
+one on their own. The second method is what catches the ones that are only
+weaker, removing too little, which no answer ever shows.
+
 ## What is not here
 
-The tables before the deletion section were measured before deletion existed.
-I have not rerun them; pigeonhole 8 into 7, for one, now takes 3,829
-conflicts instead of 3,654. There is no clause minimization (removing
-literals implied by others in the learned clause), no LBD update when a clause
-is used again, and no preprocessing.
+The tables before the deletion section were measured before deletion existed,
+and the deletion tables before minimization existed. I have not rerun them;
+pigeonhole 8 into 7, for one, took 3,654 conflicts, then 3,829 with deletion,
+and now 3,271 with minimization too. The minimization is MiniSat's recursive
+one; Glucose's extra pass with binary clauses is not here. There is no LBD
+update when a clause is used again, and no preprocessing.

@@ -44,7 +44,7 @@ def random_3sat(rng, nvars, nclauses):
 
 class Checked(sat.Solver):
     # Checks every reduction from outside: what was deleted, what stayed, and every watch list.
-    rounds = deleted = 0
+    rounds = deleted = removed = 0
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -52,12 +52,38 @@ class Checked(sat.Solver):
         self.true_lbd = {}  # id -> (clause, LBD); holding the clause keeps its id unique
         self.gap = 0
 
-    def analyze(self, conflict):
-        # LBD again, with levels read off the trail and decision points instead of the solver's level array.
-        learnt, back = super().analyze(conflict)
+    def levels(self, clause):
+        # Levels read off the trail and decision points instead of the solver's level array.
         where = {abs(l): i for i, l in enumerate(self.trail)}
-        self.true_lbd[id(learnt)] = learnt, len({bisect.bisect_right(self.limits, where[abs(l)]) for l in learnt})
+        return [bisect.bisect_right(self.limits, where[abs(l)]) for l in clause]
+
+    def analyze(self, conflict):
+        learnt, back = super().analyze(conflict)
+        levels = self.levels(learnt)
+        self.true_lbd[id(learnt)] = learnt, len(set(levels))
+        assert back == max(levels[1:], default=0), f"jumped to {back} with {learnt} at levels {levels}"
         return learnt, back
+
+    def minimize(self, learnt):
+        # Recomputed another way: one pass up the trail collects every variable that follows from the clause,
+        # and a literal goes exactly when all of its reason does. DOCS.md says why that is the same set.
+        before = list(learnt)
+        after = super().minimize(learnt)
+        follows = {abs(l) for l in before}
+        start = self.limits[0] if self.limits else len(self.trail)
+        for i, lit in enumerate(self.trail):
+            r = self.reason[abs(lit)]
+            if i < start or r is not None and all(abs(q) in follows for q in r if q != lit):
+                follows.add(abs(lit))
+        want = [before[0]] + [q for q in before[1:] if self.reason[abs(q)] is None
+                              or not all(abs(r) in follows for r in self.reason[abs(q)] if r != q)]
+        assert set(after) <= set(before) and after[0] == before[0], f"minimized {before} to {after}"
+        levels = self.levels(after)
+        assert levels.count(len(self.limits)) == 1 and levels[0] == len(self.limits), f"{after} at levels {levels}"
+        assert set(levels) == set(self.levels(before)), f"minimizing {before} to {after} emptied a level"
+        assert sorted(after) == sorted(want), f"minimized {before} to {after}, should be {want}"
+        Checked.removed += len(before) - len(after)
+        return after
 
     def reduce(self):
         lbd = lambda c: self.true_lbd[id(c)][1]
@@ -127,7 +153,7 @@ for nvars in range(4, 15):
         truth = all_models(nvars, clauses)
         model, solver = run(nvars, clauses, label)
         assert (model is not None) == bool(truth), f"{label}: CDCL says {model is not None}, brute force {bool(truth)}"
-        for learnt in solver.learnts:
+        for learnt, _ in solver.true_lbd.values():  # every clause learned, deleted ones too
             assert all(any(l in set(m) for l in learnt) for m in truth), f"{label}: learned {learnt}, not implied"
         theirs = sat.dpll(nvars, clauses)
         assert (theirs is not None) == bool(truth), f"{label}: DPLL disagrees with brute force"
@@ -280,7 +306,7 @@ assert spent < 4000, f"three 125-variable formulas took {spent} conflicts"
 print(f"three 125-variable random formulas in {spent} conflicts")
 
 # The solver's own schedule (first reduction at 2,000 conflicts) on two 200-variable formulas of
-# 13,000 to 17,000 conflicts, checked at every reduction, and their models checked clause by clause.
+# 8,000 to 16,000 conflicts, checked at every reduction, and their models checked clause by clause.
 rng = random.Random(1)
 for _ in range(3):
     random_3sat(rng, 175, 746)  # skipped: these two are the ones measured in DOCS.md
@@ -291,7 +317,7 @@ for trial in range(2):
     model = s.solve(BUDGET)
     assert model is not None and satisfies(model, 200, clauses), f"200 variables #{trial}: no valid model"
     long_rounds += s.stats["reductions"]
-assert long_rounds >= 10, f"only {long_rounds} reductions on the default schedule"
+assert long_rounds >= 6, f"only {long_rounds} reductions on the default schedule"
 print(f"two 200-variable formulas satisfied on the default schedule, through {long_rounds} reductions")
 
 # The command line, in SAT competition form: s and v lines, exit 10 or 20, and c lines with --stats.
@@ -304,14 +330,17 @@ with open("t-unsat.cnf", "w") as f:
 with open("t-bad.cnf", "w") as f:
     f.write("p cnf 2 1\n1 9 0\n")
 try:
-    for flags in ([], ["--dpll"]):
+    for flags in ([], ["--dpll"], ["--no-minimize"]):
         out = subprocess.run([sys.executable, sat.__file__, "t-sat.cnf", "--stats"] + flags, capture_output=True, text=True)
         lines = out.stdout.splitlines()
         assert out.returncode == 10 and "s SATISFIABLE" in lines, out
         lits = [int(t) for line in lines if line.startswith("v ") for t in line.split()[1:]]
         assert lits[-1] == 0 and satisfies(lits[:-1], nvars, clauses), "the v lines do not satisfy the file"
-        for key in ("decisions", "conflicts", "propagations", "time") + (() if flags else ("learned", "deleted")):
+        cdcl = () if flags == ["--dpll"] else ("learned", "minimized", "deleted")
+        for key in ("decisions", "conflicts", "propagations", "time") + cdcl:
             assert any(line.startswith(f"c {key} ") for line in lines), f"--stats {flags} printed no {key}"
+        if flags != ["--dpll"]:  # six queens minimizes one literal, unless told not to
+            assert ("c minimized 0" in lines) == (flags == ["--no-minimize"]), f"--stats {flags}: minimized wrongly"
     out = subprocess.run([sys.executable, sat.__file__, "t-unsat.cnf"], capture_output=True, text=True)
     assert out.returncode == 20 and out.stdout.splitlines() == ["s UNSATISFIABLE"], out
     out = subprocess.run([sys.executable, sat.__file__, "t-bad.cnf"], capture_output=True, text=True)
@@ -321,5 +350,7 @@ finally:
         os.remove(name)
 print("the command line prints s and v lines, exits 10 or 20, and refuses a bad file")
 
+assert Checked.removed > 0, "minimization never removed a literal"
 print(f"{Checked.rounds} reductions checked, {Checked.deleted} learned clauses deleted, every answer still right")
+print(f"{Checked.removed} literals minimized away, each removal recomputed from the trail")
 print(f"ok, in {time.perf_counter() - started:.1f}s")

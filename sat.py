@@ -1,5 +1,5 @@
-# A CDCL SAT solver: watched literals, first-UIP learning, backjumping, VSIDS, Luby restarts, LBD deletion.
-# Run: python sat.py FILE.cnf [--stats] [--dpll] [--keep], or --queens N, or --sudoku 81-CHARS
+# A CDCL SAT solver: watched literals, first-UIP learning and minimization, backjumping, VSIDS, Luby restarts, LBD deletion.
+# Run: python sat.py FILE.cnf [--stats] [--dpll] [--keep] [--no-minimize], or --queens N, or --sudoku 81-CHARS
 import argparse
 import heapq
 import sys
@@ -50,7 +50,8 @@ def luby(i):
 
 class Solver:
     # Literals are signed ints; per-literal arrays are indexed by literal + n.
-    def __init__(self, nvars, clauses, decay=0.95, restart_unit=100, reduce_first=2000, reduce_inc=300):
+    def __init__(self, nvars, clauses, decay=0.95, restart_unit=100, reduce_first=2000, reduce_inc=300,
+                 minimize=True):
         n = self.n = nvars
         self.val = [0] * (2 * n + 1)  # 1 true, -1 false, 0 unassigned
         self.watches = [[] for _ in range(2 * n + 1)]  # clauses watching each literal
@@ -65,7 +66,9 @@ class Solver:
         self.learnts, self.lbds = [], []  # lbds[i] is the LBD of learnts[i]
         self.reduce_every, self.reduce_inc = reduce_first, reduce_inc  # reduce_first=None keeps every clause
         self.next_reduce = reduce_first
-        self.stats = dict(decisions=0, conflicts=0, propagations=0, learned=0, restarts=0, reductions=0, deleted=0)
+        self.minimizing = minimize
+        self.stats = dict(decisions=0, conflicts=0, propagations=0, learned=0, minimized=0, restarts=0,
+                          reductions=0, deleted=0)
         self.ok = True
         for c in clauses:
             self.add(c)
@@ -143,13 +146,51 @@ class Solver:
                 break
             reason = self.reason[abs(p)]
         learnt[0] = -p
-        for q in learnt[1:]:
+        full = learnt
+        if self.minimizing:
+            learnt = self.minimize(learnt)  # while seen still marks the whole clause
+            self.stats["minimized"] += len(full) - len(learnt)
+        for q in full[1:]:
             seen[abs(q)] = False
         if len(learnt) == 1:
             return learnt, 0
         top = max(range(1, len(learnt)), key=lambda k: level[abs(learnt[k])])
         learnt[1], learnt[top] = learnt[top], learnt[1]
         return learnt, level[abs(learnt[1])]
+
+    def minimize(self, learnt):
+        # Drop each literal whose falsity follows from the rest of the clause. DOCS.md has the why.
+        levels = 0  # one bit per decision level in the clause, folded into 64
+        for q in learnt[1:]:
+            levels |= 1 << (self.level[abs(q)] & 63)
+        memo = {}
+        return [learnt[0]] + [q for q in learnt[1:] if not self.redundant(q, levels, memo)]
+
+    def redundant(self, q, levels, memo):
+        # Depth first through reasons with an explicit stack; memo[v] says whether v follows from the clause.
+        level, reason, seen = self.level, self.reason, self.seen
+        if reason[abs(q)] is None:
+            return False  # a decision follows from nothing
+        stack = [(abs(q), 0)]
+        while stack:
+            v, k = stack.pop()
+            r = reason[v]
+            while k < len(r):
+                u = abs(r[k])
+                k += 1
+                if u == v or seen[u] or level[u] == 0 or memo.get(u):
+                    continue
+                if memo.get(u) is False or reason[u] is None or not levels >> (level[u] & 63) & 1:
+                    for w, _ in stack:
+                        memo[w] = False  # everything on the path needed u
+                    memo[v] = False
+                    return False
+                stack.append((v, k))
+                stack.append((u, 0))
+                break
+            else:
+                memo[v] = True
+        return True
 
     def bump(self, v):
         self.activity[v] += self.bump_by
@@ -301,13 +342,13 @@ def dpll(nvars, clauses, stats=None):
     return [v if assign.get(v, False) else -v for v in range(1, nvars + 1)]
 
 
-def solve(nvars, clauses, method="cdcl", max_conflicts=None, keep=False):
+def solve(nvars, clauses, method="cdcl", max_conflicts=None, keep=False, minimize=True):
     start = time.perf_counter()
     if method == "dpll":
         stats = {}
         model = dpll(nvars, clauses, stats)
     else:
-        solver = Solver(nvars, clauses, reduce_first=None) if keep else Solver(nvars, clauses)
+        solver = Solver(nvars, clauses, reduce_first=None if keep else 2000, minimize=minimize)
         model = solver.solve(max_conflicts)
         stats = solver.stats
     stats["time"] = time.perf_counter() - start
@@ -356,6 +397,7 @@ def main():
     ap.add_argument("--stats", action="store_true", help="print decisions, conflicts and time as c lines")
     ap.add_argument("--dpll", action="store_true", help="use the plain DPLL solver instead")
     ap.add_argument("--keep", action="store_true", help="never delete learned clauses")
+    ap.add_argument("--no-minimize", action="store_true", help="keep learned clauses as first-UIP analysis left them")
     ap.add_argument("--queens", type=int, metavar="N", help="place N queens on an N by N board")
     ap.add_argument("--sudoku", metavar="GRID", help="81 characters, '.' or '0' for blanks")
     args = ap.parse_args()
@@ -373,9 +415,9 @@ def main():
             sys.exit(f"sat: {args.file}: {e}")
     else:
         ap.error("give a CNF file, --queens or --sudoku")
-    model, stats = solve(nvars, clauses, "dpll" if args.dpll else "cdcl", keep=args.keep)
+    model, stats = solve(nvars, clauses, "dpll" if args.dpll else "cdcl", keep=args.keep, minimize=not args.no_minimize)
     if args.stats:
-        for key in ("decisions", "conflicts", "propagations", "learned", "restarts", "deleted"):
+        for key in ("decisions", "conflicts", "propagations", "learned", "minimized", "restarts", "deleted"):
             if key in stats:
                 print(f"c {key} {stats[key]}")
         print(f"c time {stats['time']:.3f}s")

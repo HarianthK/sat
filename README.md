@@ -9,6 +9,7 @@ variables that make every clause true, or says that none exist.
     c conflicts 14
     c propagations 285
     c learned 14
+    c minimized 5
     c restarts 0
     c deleted 0
     c time 0.002s
@@ -37,6 +38,9 @@ why as a new clause, so it never walked into that one again.
 - CDCL, the algorithm behind every modern solver: unit propagation with two
   watched literals, conflict analysis to the first unique implication point,
   learned clauses, and backjumping past the levels that did not matter.
+- Learned clause minimization, as in MiniSat: after analysis, every literal
+  whose falsity already follows from the rest of the clause, through the
+  reasons, is dropped. `--no-minimize` turns it off.
 - VSIDS-style branching: variables in recent conflicts are tried first, with
   older bumps decaying by 5% per conflict. The last value of each variable is
   remembered and reused (phase saving).
@@ -65,8 +69,8 @@ Python process, median of five runs:
 
 On random formulas CDCL needs 6 to 48 times fewer conflicts here, and the gap
 grows with size. Pigeonhole stays hard for both, which is the point of it;
-DOCS.md says why. This table was measured before clause deletion; with it, 8
-pigeons into 7 holes takes 3,829 conflicts.
+DOCS.md says why. This table was measured before clause deletion and minimization;
+with both, 8 pigeons into 7 holes takes 3,271 conflicts.
 
 Deletion, against keeping every clause, in one process, alternating, median of
 five runs (three for 9 into 8):
@@ -79,16 +83,23 @@ five runs (three for 9 into 8):
 
 It holds far fewer clauses, so each conflict is cheaper, but it does not always
 save conflicts, and on the second formula it was slower. DOCS.md has seven
-instances and how deletion is checked.
+instances and how deletion is checked. This table was measured before
+minimization.
+
+Minimization, against first-UIP clauses as they come, on ten instances in one
+process, alternating, median of five runs: it removed 11 to 26% of the
+literals of each learned clause on random formulas and 15 to 16% on pigeonhole,
+but took more conflicts on five of the ten and 46.9 seconds in all against
+28.5 without. Shorter clauses, no speedup here. DOCS.md has the table.
 
 ## Running it
 
-    python sat.py FILE.cnf [--stats] [--dpll] [--keep]
+    python sat.py FILE.cnf [--stats] [--dpll] [--keep] [--no-minimize]
     python sat.py --queens N
     python sat.py --sudoku 8..........36......7..9.2...5...7.......457.....1...3...1....68..85...1..9....4..
     python test_sat.py
 
 ## Notes
 
-[DOCS.md](DOCS.md) is what writing it taught me, including the 35 ways I broke
+[DOCS.md](DOCS.md) is what writing it taught me, including the 49 ways I broke
 it on purpose and which check caught each one.
