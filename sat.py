@@ -1,5 +1,5 @@
 # A CDCL SAT solver: watched literals, first-UIP learning and minimization, backjumping, VSIDS, Luby restarts, LBD deletion.
-# Run: python sat.py FILE.cnf [--stats] [--dpll] [--keep] [--no-minimize], or --queens N, or --sudoku 81-CHARS
+# Run: python sat.py FILE.cnf [--stats] [--dpll] [--keep] [--no-minimize], or --queens N or --sudoku 81-CHARS [--cnf]
 import argparse
 import heapq
 import sys
@@ -400,6 +400,7 @@ def main():
     ap.add_argument("--no-minimize", action="store_true", help="keep learned clauses as first-UIP analysis left them")
     ap.add_argument("--queens", type=int, metavar="N", help="place N queens on an N by N board")
     ap.add_argument("--sudoku", metavar="GRID", help="81 characters, '.' or '0' for blanks")
+    ap.add_argument("--cnf", action="store_true", help="print the formula as DIMACS CNF instead of solving it")
     args = ap.parse_args()
     if args.queens:
         nvars, clauses = queens(args.queens)
@@ -415,6 +416,11 @@ def main():
             sys.exit(f"sat: {args.file}: {e}")
     else:
         ap.error("give a CNF file, --queens or --sudoku")
+    if args.cnf:
+        # The formula itself in DIMACS, so another solver can be given exactly the same problem.
+        print(f"p cnf {nvars} {len(clauses)}")
+        print("\n".join(" ".join(map(str, c)) + " 0" for c in clauses))
+        return
     model, stats = solve(nvars, clauses, "dpll" if args.dpll else "cdcl", keep=args.keep, minimize=not args.no_minimize)
     if args.stats:
         for key in ("decisions", "conflicts", "propagations", "learned", "minimized", "restarts", "deleted"):

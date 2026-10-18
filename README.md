@@ -96,6 +96,7 @@ but took more conflicts on five of the ten and 46.9 seconds in all against
 
     python sat.py FILE.cnf [--stats] [--dpll] [--keep] [--no-minimize]
     python sat.py --queens N
+    python sat.py --queens N --cnf > queens.cnf   # the formula itself, for any other solver
     python sat.py --sudoku 8..........36......7..9.2...5...7.......457.....1...3...1....68..85...1..9....4..
     python test_sat.py
 

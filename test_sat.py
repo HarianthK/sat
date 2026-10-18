@@ -350,6 +350,20 @@ finally:
         os.remove(name)
 print("the command line prints s and v lines, exits 10 or 20, and refuses a bad file")
 
+# --cnf prints the formula instead of solving it: read back, it must be exactly the encoder's
+# clauses, and that file must then be solved like any other (six queens: satisfiable, exit 10).
+cnf = subprocess.run([sys.executable, sat.__file__, "--queens", "6", "--cnf"], capture_output=True, text=True)
+assert cnf.returncode == 0 and "s " not in cnf.stdout, cnf.stdout[:200]
+assert sat.parse_dimacs(cnf.stdout) == sat.queens(6), "the printed CNF is not the queens encoding"
+with open("t-queens.cnf", "w") as f:
+    f.write(cnf.stdout)
+try:
+    solved = subprocess.run([sys.executable, sat.__file__, "t-queens.cnf"], capture_output=True, text=True)
+    assert solved.returncode == 10 and "s SATISFIABLE" in solved.stdout, solved.stdout[:200]
+finally:
+    os.remove("t-queens.cnf")
+print("--cnf prints the encoding, and the printed file solves the same way")
+
 assert Checked.removed > 0, "minimization never removed a literal"
 print(f"{Checked.rounds} reductions checked, {Checked.deleted} learned clauses deleted, every answer still right")
 print(f"{Checked.removed} literals minimized away, each removal recomputed from the trail")
