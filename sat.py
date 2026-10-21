@@ -1,5 +1,5 @@
 # A CDCL SAT solver: watched literals, first-UIP learning and minimization, backjumping, VSIDS, Luby restarts, LBD deletion.
-# Run: python sat.py FILE.cnf [--stats] [--dpll] [--keep] [--no-minimize], or --queens N or --sudoku 81-CHARS [--cnf]
+# Run: python sat.py FILE.cnf [--stats] [--dpll] [--keep] [--no-minimize], or --queens N or --sudoku 81-CHARS [--cnf] [--count]
 import argparse
 import heapq
 import sys
@@ -342,6 +342,18 @@ def dpll(nvars, clauses, stats=None):
     return [v if assign.get(v, False) else -v for v in range(1, nvars + 1)]
 
 
+def count_models(nvars, clauses, limit=None):
+    # Every solution, found by solving again with each one forbidden by a clause it alone breaks.
+    clauses, found = list(clauses), 0
+    while limit is None or found < limit:
+        model, _ = solve(nvars, clauses)
+        if model is None:
+            break
+        found += 1
+        clauses.append([-lit for lit in model])
+    return found
+
+
 def solve(nvars, clauses, method="cdcl", max_conflicts=None, keep=False, minimize=True):
     start = time.perf_counter()
     if method == "dpll":
@@ -401,6 +413,7 @@ def main():
     ap.add_argument("--queens", type=int, metavar="N", help="place N queens on an N by N board")
     ap.add_argument("--sudoku", metavar="GRID", help="81 characters, '.' or '0' for blanks")
     ap.add_argument("--cnf", action="store_true", help="print the formula as DIMACS CNF instead of solving it")
+    ap.add_argument("--count", action="store_true", help="count every solution instead of finding one")
     args = ap.parse_args()
     if args.queens:
         nvars, clauses = queens(args.queens)
@@ -420,6 +433,9 @@ def main():
         # The formula itself in DIMACS, so another solver can be given exactly the same problem.
         print(f"p cnf {nvars} {len(clauses)}")
         print("\n".join(" ".join(map(str, c)) + " 0" for c in clauses))
+        return
+    if args.count:
+        print(f"c solutions {count_models(nvars, clauses)}")
         return
     model, stats = solve(nvars, clauses, "dpll" if args.dpll else "cdcl", keep=args.keep, minimize=not args.no_minimize)
     if args.stats:

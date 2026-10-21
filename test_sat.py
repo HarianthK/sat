@@ -364,6 +364,20 @@ finally:
     os.remove("t-queens.cnf")
 print("--cnf prints the encoding, and the printed file solves the same way")
 
+# Counting: N queens has a known number of solutions for each N (OEIS A000170), and small random
+# formulas must have exactly as many models as trying every assignment finds.
+counts = [sat.count_models(*sat.queens(n)) for n in range(1, 9)]
+assert counts == [1, 0, 0, 2, 10, 4, 40, 92], counts
+rng = random.Random(9)
+for _ in range(30):
+    n = rng.randint(3, 9)
+    cnf = [[rng.choice([-1, 1]) * rng.randint(1, n) for _ in range(3)] for _ in range(rng.randint(1, 3 * n))]
+    brute = sum(all(any((lit > 0) == bool(bits >> (abs(lit) - 1) & 1) for lit in c) for c in cnf) for bits in range(1 << n))
+    assert sat.count_models(n, cnf) == brute, (n, cnf, brute)
+out = subprocess.run([sys.executable, sat.__file__, "--queens", "6", "--count"], capture_output=True, text=True)
+assert out.stdout.strip() == "c solutions 4", out.stdout
+print("solution counts match the queens sequence and brute force")
+
 assert Checked.removed > 0, "minimization never removed a literal"
 print(f"{Checked.rounds} reductions checked, {Checked.deleted} learned clauses deleted, every answer still right")
 print(f"{Checked.removed} literals minimized away, each removal recomputed from the trail")
