@@ -378,6 +378,24 @@ out = subprocess.run([sys.executable, sat.__file__, "--queens", "6", "--count"],
 assert out.stdout.strip() == "c solutions 4", out.stdout
 print("solution counts match the queens sequence and brute force")
 
+# --verify checks another solver's answer: our own SAT output passes, one flipped literal is caught
+# with the clause it breaks, and an answer that sets a variable both ways is refused.
+open("t-verify.cnf", "w").write("p cnf 3 3\n1 2 0\n-1 3 0\n-2 -3 0\n")
+try:
+    answer = subprocess.run([sys.executable, sat.__file__, "t-verify.cnf"], capture_output=True, text=True).stdout
+    open("t-answer.txt", "w").write(answer)
+    out = subprocess.run([sys.executable, sat.__file__, "t-verify.cnf", "--verify", "t-answer.txt"], capture_output=True, text=True)
+    assert out.returncode == 0 and out.stdout.strip() == "c verified", out
+    assert sat.verify([[1, 2], [-1, 3], [-2, -3]], "v -1 2 3 0") == [-2, -3]
+    assert sat.verify([[1, 2]], "v 1\nv 2 0") is None and sat.verify([[1, 2]], "v 0") == [1, 2]
+    open("t-answer.txt", "w").write("s SATISFIABLE\nv 1 -1 3 0\n")
+    out = subprocess.run([sys.executable, sat.__file__, "t-verify.cnf", "--verify", "t-answer.txt"], capture_output=True, text=True)
+    assert out.returncode == 1 and "both ways" in out.stderr and "Traceback" not in out.stderr, out
+finally:
+    for name in ("t-verify.cnf", "t-answer.txt"):
+        os.remove(name)
+print("--verify passes a right answer and names the clause a wrong one breaks")
+
 assert Checked.removed > 0, "minimization never removed a literal"
 print(f"{Checked.rounds} reductions checked, {Checked.deleted} learned clauses deleted, every answer still right")
 print(f"{Checked.removed} literals minimized away, each removal recomputed from the trail")

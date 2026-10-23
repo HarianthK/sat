@@ -354,6 +354,15 @@ def count_models(nvars, clauses, limit=None):
     return found
 
 
+def verify(clauses, text):
+    # Checks a solver's v lines against the formula: the first clause no literal satisfies, or None.
+    # A variable the answer leaves out counts as unset, so it satisfies nothing.
+    true = {int(t) for line in text.splitlines() if line.startswith("v ") for t in line.split()[1:]} - {0}
+    if any(-lit in true for lit in true):
+        raise ValueError("the answer sets a variable both ways")
+    return next((c for c in clauses if not true.intersection(c)), None)
+
+
 def solve(nvars, clauses, method="cdcl", max_conflicts=None, keep=False, minimize=True):
     start = time.perf_counter()
     if method == "dpll":
@@ -414,6 +423,7 @@ def main():
     ap.add_argument("--sudoku", metavar="GRID", help="81 characters, '.' or '0' for blanks")
     ap.add_argument("--cnf", action="store_true", help="print the formula as DIMACS CNF instead of solving it")
     ap.add_argument("--count", action="store_true", help="count every solution instead of finding one")
+    ap.add_argument("--verify", metavar="ANSWER", help="check a solver's s and v output against the formula")
     args = ap.parse_args()
     if args.queens:
         nvars, clauses = queens(args.queens)
@@ -433,6 +443,16 @@ def main():
         # The formula itself in DIMACS, so another solver can be given exactly the same problem.
         print(f"p cnf {nvars} {len(clauses)}")
         print("\n".join(" ".join(map(str, c)) + " 0" for c in clauses))
+        return
+    if args.verify:
+        try:
+            with open(args.verify) as f:
+                broken = verify(clauses, f.read())
+        except (OSError, ValueError) as e:
+            sys.exit(f"sat: {args.verify}: {e}")
+        if broken is not None:
+            sys.exit("sat: unsatisfied clause: " + " ".join(map(str, broken)) + " 0")
+        print("c verified")
         return
     if args.count:
         print(f"c solutions {count_models(nvars, clauses)}")
