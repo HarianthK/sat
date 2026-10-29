@@ -51,6 +51,12 @@ why as a new clause, so it never walked into that one again.
   turns it off.
 - A plain DPLL solver too, `--dpll`, kept for comparison.
 - Answers in SAT competition form: `s` and `v` lines, exit status 10 or 20.
+- Proofs for UNSAT answers: `--proof FILE` writes every learned and deleted
+  clause in DRAT, the format SAT competitions require, ending in the empty
+  clause. `--check-proof FILE` checks one against the formula by unit
+  propagation alone, so "no solution" can be checked like `--verify` checks a
+  solution. It checks RUP steps only, which is all this solver writes; a
+  proof from another solver that needs RAT is refused at that line.
 - Two encoders for fun: N-queens and Sudoku.
 
 ## How it compares
@@ -94,11 +100,13 @@ but took more conflicts on five of the ten and 46.9 seconds in all against
 
 ## Running it
 
-    python sat.py FILE.cnf [--stats] [--dpll] [--keep] [--no-minimize]
+    python sat.py FILE.cnf [--stats] [--dpll] [--keep] [--no-minimize] [--proof OUT]
     python sat.py --queens N
     python sat.py --queens N --cnf > queens.cnf   # the formula itself, for any other solver
     python sat.py --queens 8 --count              # every solution: c solutions 92
     python sat.py f.cnf --verify answer.txt      # check any solver's s and v lines against f.cnf
+    python sat.py f.cnf --proof f.drat           # UNSAT, with a proof of it
+    python sat.py f.cnf --check-proof f.drat     # check that proof: c proof verified
     python sat.py --sudoku 8..........36......7..9.2...5...7.......457.....1...3...1....68..85...1..9....4..
     python test_sat.py
 

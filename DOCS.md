@@ -535,6 +535,50 @@ So the soundness check and the solution counts would have caught each unsound
 one on their own. The second method is what catches the ones that are only
 weaker, removing too little, which no answer ever shows.
 
+## Proofs of UNSAT
+
+A SAT answer is easy to check: plug it in. An UNSAT answer says no assignment
+works, and the only way to check that without trusting the solver is a proof.
+CDCL already makes one as it goes. Every learned clause follows from the
+clauses before it by unit propagation: make all its literals false, propagate,
+and a conflict comes out. That property is called RUP, and the conflict
+analysis is what guarantees it. Minimization keeps it, because each literal it
+drops is one whose falsity propagation already derives. So the proof is the
+learned clauses in order, then the empty clause, which is RUP when propagation
+on the formula and lemmas alone conflicts. That is the level-0 conflict where
+the solver gives up.
+
+Deletions go in too, as `d` lines, so a checker can drop the clause and keep
+its own work small. They cannot make a wrong proof right, only a right one
+wrong, if the solver deleted something a later step needed and still wrote
+that step. DRAT also allows RAT steps, which preprocessing needs; this solver
+has no preprocessing, so it never writes one.
+
+`check_proof` shares no code with the solver. It keeps clauses in a dictionary
+with plain occurrence lists, no watches, and propagates from scratch for every
+step, so it is slow (1.4 seconds for 7 pigeons in 6 holes, against 0.15 to
+solve it) and simple. A deletion is matched by the set of its literals, not
+their order, since the solver reorders literals as it moves its watches.
+
+The test checks 46 proofs: random UNSAT formulas of 20 to 50 variables and
+pigeonhole up to 6 into 5, each with minimization on and off and with deletion
+forced every few conflicts, 249 deletions in all. The checker has to refuse a
+proof with no empty clause, an empty clause that does not follow, a clause used
+after it was deleted, a deletion of a clause that is not there, and the real
+6-into-5 proof given a formula without the clause that seats one pigeon, which
+is satisfiable.
+
+Thirteen breakages, solver side and checker side, each caught: a lemma not
+logged, logged with its first literal flipped, the empty clause left out at
+either place the solver finds it, clauses still in use logged as deleted, and
+in the checker no RUP check, units ignored, the wrong occurrence list, a
+falsified clause not counted as a conflict, implied literals not propagated
+on, deletions ignored, deletions matched by literal order, and a missing empty
+clause accepted. "Deletions ignored" passed at first. The case meant to catch
+it deleted a unit, and the broken checker still dropped units from its unit
+list, so the test now also deletes a two-literal clause the empty clause
+needs.
+
 ## What is not here
 
 The tables before the deletion section were measured before deletion existed,

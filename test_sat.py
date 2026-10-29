@@ -396,6 +396,80 @@ finally:
         os.remove(name)
 print("--verify passes a right answer and names the clause a wrong one breaks")
 
+# DRAT proofs: every UNSAT answer here comes with a proof that check_proof, which propagates over
+# plain occurrence lists and shares no code with the solver, must accept.
+def proved(nvars, clauses, label, **options):
+    proof = []
+    model = sat.Solver(nvars, clauses, proof=proof, **options).solve(BUDGET)
+    assert model is None, f"{label}: expected UNSAT"
+    why = sat.check_proof(clauses, "\n".join(proof))
+    assert why is None, f"{label}: proof refused, {why}"
+    return proof
+
+
+rng = random.Random(11)
+deletions = proofs = 0
+for nvars in (20, 30, 40, 50):
+    found = 0
+    while found < 3:
+        clauses = random_3sat(rng, nvars, int(nvars * 4.26) + 5)
+        if sat.Solver(nvars, clauses).solve(BUDGET) is not None:
+            continue
+        found += 1
+        for options in ({}, {"minimize": False}, {"reduce_first": 20, "reduce_inc": 5}):
+            proof = proved(nvars, clauses, f"random {nvars} variables {options}", **options)
+            deletions += sum(line.startswith("d ") for line in proof)
+            proofs += 1
+for n in range(1, 6):
+    nvars, clauses = pigeonhole(n + 1, n)
+    for options in ({}, {"reduce_first": 30, "reduce_inc": 10}):
+        proof = proved(nvars, clauses, f"pigeonhole {n + 1} into {n}", **options)
+        deletions += sum(line.startswith("d ") for line in proof)
+        proofs += 1
+assert deletions > 100, f"only {deletions} deletions in the proofs, so deletion was hardly checked"
+assert proved(1, [[1], [-1]], "x and not x") == ["0"]
+assert sat.check_proof([[1], []], "") is None, "a formula with an empty clause needs no proof"
+
+# The checker must refuse what does not follow. 6 pigeons into 5 holes without the clause that seats
+# pigeon 0 is satisfiable, so no proof, the real one included, may get through.
+nvars, clauses = pigeonhole(6, 5)
+real = "\n".join(proved(nvars, clauses, "pigeonhole 6 into 5"))
+assert sat.check_proof(clauses[1:], real), "a proof was accepted for a satisfiable formula"
+xor = [[1, 2], [-1, 2], [1, -2], [-1, -2]]
+assert sat.check_proof(xor, "1 0\n0") is None
+assert "never reaches" in sat.check_proof(xor, "1 0"), "a proof without the empty clause"
+assert "unit propagation" in sat.check_proof([[1, 2], [-1, 2], [1, -2]], "0"), "a satisfiable formula's empty clause"
+assert "unit propagation" in sat.check_proof([[1, 2, 3], [-1, 2], [1, -2]], "2 0\n0"), "an empty clause that does not follow"
+# With the unit 1 the empty clause follows (1, so 2 and -2); with it deleted, nothing propagates.
+assert "unit propagation" in sat.check_proof(xor, "1 0\nd 1 0\n0"), "the empty clause after its support was deleted"
+assert "unit propagation" in sat.check_proof([[1], [-1, 2], [-2]], "d -1 2 0\n0"), "the empty clause after a binary support was deleted"
+assert "not there" in sat.check_proof(xor, "d 1 3 0\n0"), "deleting a clause that is not in the formula"
+assert sat.check_proof(xor + [[1, 2, 3]], "d 3 2 1 0\n1 0\n0") is None, "deletion must not depend on literal order"
+assert "not there" in sat.check_proof(xor + [[1, 2, 3]], "d 3 2 1 0\nd 1 2 3 0\n0"), "one clause deleted twice"
+for bad in ("1 2", "1 0 2 0", "d", "x 0"):
+    try:
+        sat.check_proof(xor, bad)
+        raise AssertionError(f"malformed proof line {bad!r} was accepted")
+    except ValueError:
+        pass
+
+# The command line: --proof writes the file, --check-proof passes it, and a cut proof is refused.
+open("t-proof.cnf", "w").write(f"p cnf {nvars} {len(clauses)}\n" + "".join(" ".join(map(str, c)) + " 0\n" for c in clauses))
+try:
+    out = subprocess.run([sys.executable, sat.__file__, "t-proof.cnf", "--proof", "t-proof.drat"], capture_output=True, text=True)
+    assert out.returncode == 20 and os.path.exists("t-proof.drat"), out
+    out = subprocess.run([sys.executable, sat.__file__, "t-proof.cnf", "--check-proof", "t-proof.drat"], capture_output=True, text=True)
+    assert out.returncode == 0 and out.stdout.strip() == "c proof verified", out
+    lines = open("t-proof.drat").read().splitlines()
+    open("t-proof.drat", "w").write("\n".join(lines[:-1]) + "\n")
+    out = subprocess.run([sys.executable, sat.__file__, "t-proof.cnf", "--check-proof", "t-proof.drat"], capture_output=True, text=True)
+    assert out.returncode == 1 and "never reaches" in out.stderr and "Traceback" not in out.stderr, out
+finally:
+    for name in ("t-proof.cnf", "t-proof.drat"):
+        if os.path.exists(name):
+            os.remove(name)
+print(f"{proofs} UNSAT proofs checked, {deletions} deletions in them; wrong proofs refused")
+
 assert Checked.removed > 0, "minimization never removed a literal"
 print(f"{Checked.rounds} reductions checked, {Checked.deleted} learned clauses deleted, every answer still right")
 print(f"{Checked.removed} literals minimized away, each removal recomputed from the trail")

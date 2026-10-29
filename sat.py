@@ -1,7 +1,8 @@
 # A CDCL SAT solver: watched literals, first-UIP learning and minimization, backjumping, VSIDS, Luby restarts, LBD deletion.
-# Run: python sat.py FILE.cnf [--stats] [--dpll] [--keep] [--no-minimize], or --queens N or --sudoku 81-CHARS [--cnf] [--count]
+# Run: python sat.py FILE.cnf [--stats] [--dpll] [--keep] [--no-minimize] [--proof OUT] [--check-proof PROOF], or --queens N or --sudoku 81-CHARS
 import argparse
 import heapq
+import itertools
 import sys
 import time
 
@@ -51,8 +52,9 @@ def luby(i):
 class Solver:
     # Literals are signed ints; per-literal arrays are indexed by literal + n.
     def __init__(self, nvars, clauses, decay=0.95, restart_unit=100, reduce_first=2000, reduce_inc=300,
-                 minimize=True):
+                 minimize=True, proof=None):
         n = self.n = nvars
+        self.proof = proof  # a list that gets one DRAT line per learned or deleted clause
         self.val = [0] * (2 * n + 1)  # 1 true, -1 false, 0 unassigned
         self.watches = [[] for _ in range(2 * n + 1)]  # clauses watching each literal
         self.level = [0] * (n + 1)
@@ -87,6 +89,10 @@ class Solver:
         else:
             self.watches[c[0] + self.n].append(c)
             self.watches[c[1] + self.n].append(c)
+
+    def note(self, lits, delete=False):
+        if self.proof is not None:
+            self.proof.append(("d " if delete else "") + " ".join(map(str, list(lits) + [0])))
 
     def assign(self, lit, reason):
         v = abs(lit)
@@ -239,6 +245,8 @@ class Solver:
         order = sorted(range(len(self.learnts)), key=lambda i: -self.lbds[i])
         gone = {i for i in order[:len(order) // 2] if self.lbds[i] > 2 and id(self.learnts[i]) not in locked}
         dead = [self.learnts[i] for i in gone]
+        for c in dead:
+            self.note(c, delete=True)
         ids, n = {id(c) for c in dead}, self.n
         for w in {c[0] + n for c in dead} | {c[1] + n for c in dead}:
             self.watches[w] = [c for c in self.watches[w] if id(c) not in ids]
@@ -249,6 +257,7 @@ class Solver:
 
     def solve(self, max_conflicts=None):
         if not self.ok:
+            self.note([])
             return None
         stats, restarts, since = self.stats, 1, 0
         while True:
@@ -257,6 +266,7 @@ class Solver:
                 stats["conflicts"] += 1
                 since += 1
                 if not self.limits:
+                    self.note([])  # the empty clause: a conflict with nothing decided
                     return None
                 if max_conflicts and stats["conflicts"] > max_conflicts:
                     raise RuntimeError(f"gave up after {max_conflicts} conflicts")
@@ -264,6 +274,7 @@ class Solver:
                 self.lbds.append(len({self.level[abs(l)] for l in learnt}))  # before the jump changes levels
                 self.backtrack(back)
                 self.learnts.append(learnt)
+                self.note(learnt)
                 stats["learned"] += 1
                 if len(learnt) > 1:
                     self.watches[learnt[0] + self.n].append(learnt)
@@ -363,13 +374,81 @@ def verify(clauses, text):
     return next((c for c in clauses if not true.intersection(c)), None)
 
 
-def solve(nvars, clauses, method="cdcl", max_conflicts=None, keep=False, minimize=True):
+def check_proof(clauses, text):
+    # Forward DRUP checking: each added clause, once all its literals are made false, must let unit
+    # propagation reach a conflict, and the proof must end in the empty clause. Returns None or why not.
+    if any(not c for c in clauses):
+        return None  # the formula is false as it stands
+    db, occurs, ids, units, fresh = {}, {}, {}, set(), itertools.count()
+
+    def conflicts(assumed):
+        true, queue = set(), []
+        for lit in assumed + [db[i][0] for i in units]:
+            if -lit in true:
+                return True
+            if lit not in true:
+                true.add(lit)
+                queue.append(lit)
+        while queue:
+            lit = queue.pop()
+            for i in occurs.get(-lit, ()):
+                c = db.get(i)
+                if c is None or any(x in true for x in c):
+                    continue
+                free = [x for x in c if -x not in true]
+                if not free:
+                    return True
+                if len(free) == 1:
+                    true.add(free[0])
+                    queue.append(free[0])
+        return False
+
+    def insert(c):
+        i = next(fresh)
+        db[i] = c
+        ids.setdefault(frozenset(c), []).append(i)
+        for lit in c:
+            occurs.setdefault(lit, []).append(i)
+        if len(c) == 1:
+            units.add(i)
+
+    for c in clauses:
+        insert(list(dict.fromkeys(c)))
+    for number, line in enumerate(text.splitlines(), 1):
+        words = line.split()
+        if not words or words[0] == "c":
+            continue
+        delete = words[0] == "d"
+        try:
+            lits = [int(w) for w in words[delete:]]
+        except ValueError:
+            raise ValueError(f"line {number}: not a clause: {line.strip()}")
+        if not lits or lits[-1] != 0 or 0 in lits[:-1]:
+            raise ValueError(f"line {number}: a clause must end in 0, and only there")
+        lits = list(dict.fromkeys(lits[:-1]))
+        if delete:
+            same = ids.get(frozenset(lits))
+            if not same:
+                return f"line {number} deletes a clause that is not there: {line.strip()}"
+            i = same.pop()
+            del db[i]
+            units.discard(i)
+            continue
+        if not conflicts([-l for l in lits]):
+            return f"line {number} does not follow by unit propagation: {line.strip()}"
+        if not lits:
+            return None
+        insert(lits)
+    return "the proof never reaches the empty clause"
+
+
+def solve(nvars, clauses, method="cdcl", max_conflicts=None, keep=False, minimize=True, proof=None):
     start = time.perf_counter()
     if method == "dpll":
         stats = {}
         model = dpll(nvars, clauses, stats)
     else:
-        solver = Solver(nvars, clauses, reduce_first=None if keep else 2000, minimize=minimize)
+        solver = Solver(nvars, clauses, reduce_first=None if keep else 2000, minimize=minimize, proof=proof)
         model = solver.solve(max_conflicts)
         stats = solver.stats
     stats["time"] = time.perf_counter() - start
@@ -424,6 +503,8 @@ def main():
     ap.add_argument("--cnf", action="store_true", help="print the formula as DIMACS CNF instead of solving it")
     ap.add_argument("--count", action="store_true", help="count every solution instead of finding one")
     ap.add_argument("--verify", metavar="ANSWER", help="check a solver's s and v output against the formula")
+    ap.add_argument("--proof", metavar="FILE", help="write a DRAT proof of an UNSAT answer to FILE")
+    ap.add_argument("--check-proof", metavar="FILE", help="check a DRUP proof that the formula has no solution")
     args = ap.parse_args()
     if args.queens:
         nvars, clauses = queens(args.queens)
@@ -454,10 +535,27 @@ def main():
             sys.exit("sat: unsatisfied clause: " + " ".join(map(str, broken)) + " 0")
         print("c verified")
         return
+    if args.check_proof:
+        try:
+            with open(args.check_proof) as f:
+                why = check_proof(clauses, f.read())
+        except (OSError, ValueError) as e:
+            sys.exit(f"sat: {args.check_proof}: {e}")
+        if why:
+            sys.exit(f"sat: {args.check_proof}: {why}")
+        print("c proof verified")
+        return
     if args.count:
         print(f"c solutions {count_models(nvars, clauses)}")
         return
-    model, stats = solve(nvars, clauses, "dpll" if args.dpll else "cdcl", keep=args.keep, minimize=not args.no_minimize)
+    if args.proof and args.dpll:
+        ap.error("--proof needs the CDCL solver, not --dpll")
+    proof = [] if args.proof else None
+    model, stats = solve(nvars, clauses, "dpll" if args.dpll else "cdcl", keep=args.keep, minimize=not args.no_minimize,
+                         proof=proof)
+    if args.proof:
+        with open(args.proof, "w") as f:
+            f.write("".join(line + "\n" for line in proof))
     if args.stats:
         for key in ("decisions", "conflicts", "propagations", "learned", "minimized", "restarts", "deleted"):
             if key in stats:
