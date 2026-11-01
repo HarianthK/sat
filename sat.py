@@ -1,5 +1,5 @@
 # A CDCL SAT solver: watched literals, first-UIP learning and minimization, backjumping, VSIDS, Luby restarts, LBD deletion.
-# Run: python sat.py FILE.cnf [--stats] [--dpll] [--keep] [--no-minimize] [--proof OUT] [--check-proof PROOF], or --queens N or --sudoku 81-CHARS
+# Run: python sat.py FILE.cnf [--stats] [--dpll] [--keep] [--no-minimize] [--elim] [--proof OUT] [--check-proof PROOF], or --queens N or --sudoku 81-CHARS
 import argparse
 import heapq
 import itertools
@@ -442,8 +442,74 @@ def check_proof(clauses, text):
     return "the proof never reaches the empty clause"
 
 
-def solve(nvars, clauses, method="cdcl", max_conflicts=None, keep=False, minimize=True, proof=None):
+def resolvents(pos, neg, v):
+    # Every clause that follows from one with v and one with -v, leaving out the always-true ones.
+    for p in pos:
+        for q in neg:
+            r = dict.fromkeys([l for l in p if l != v] + [l for l in q if l != -v])
+            if not any(-l in r for l in r):
+                yield list(r)
+
+
+def eliminate(nvars, clauses, proof=None, longest=20):
+    # Bounded variable elimination, as in SatELite: a variable goes when the resolvents on it are no more
+    # clauses than the ones holding it. Returns the clauses left and what extend() needs. DOCS.md has why.
+    db, occurs, fresh, removed = {}, {l: set() for l in range(-nvars, nvars + 1)}, itertools.count(), []
+    for c in clauses:
+        c = list(dict.fromkeys(c))
+        if not any(-l in c for l in c):
+            i = next(fresh)
+            db[i] = c
+            for l in c:
+                occurs[l].add(i)
+    # Cheapest first; after a pass, only variables whose clauses changed are worth trying again.
+    touched = set(range(1, nvars + 1))
+    while touched:
+        queue, touched = sorted(touched, key=lambda v: len(occurs[v]) * len(occurs[-v])), set()
+        for v in queue:
+            here = occurs[v] | occurs[-v]
+            if not here:
+                continue
+            pos, neg = [db[i] for i in occurs[v]], [db[i] for i in occurs[-v]]
+            added = list(itertools.islice(resolvents(pos, neg, v), len(here) + 1))
+            if len(added) > len(here) or any(len(r) > longest for r in added):
+                continue
+            for r in added:  # each follows by unit propagation from its two parents, so add before deleting them
+                if proof is not None:
+                    proof.append(" ".join(map(str, r + [0])))
+                i = next(fresh)
+                db[i] = r
+                for l in r:
+                    occurs[l].add(i)
+            for i in here:
+                if proof is not None:
+                    proof.append("d " + " ".join(map(str, db[i] + [0])))
+                for l in db.pop(i):
+                    occurs[l].discard(i)
+                    touched.add(abs(l))
+            touched.discard(v)
+            removed.append((v, pos))
+            if [] in added:
+                return list(db.values()), removed
+    return list(db.values()), removed
+
+
+def extend(model, removed):
+    # Values for the eliminated variables, newest first: false, unless a clause it was taken from needs it
+    # true. Never both ways, since then the resolvent of the two clauses would be false too.
+    true = set(model)
+    for v, pos in reversed(removed):
+        need = any(not any(l in true for l in c if l != v) for c in pos)
+        true.discard(-v if need else v)
+        true.add(v if need else -v)
+    return [v if v in true else -v for v in range(1, len(model) + 1)]
+
+
+def solve(nvars, clauses, method="cdcl", max_conflicts=None, keep=False, minimize=True, proof=None, elim=False):
     start = time.perf_counter()
+    removed = []
+    if elim:
+        clauses, removed = eliminate(nvars, clauses, proof)
     if method == "dpll":
         stats = {}
         model = dpll(nvars, clauses, stats)
@@ -451,6 +517,9 @@ def solve(nvars, clauses, method="cdcl", max_conflicts=None, keep=False, minimiz
         solver = Solver(nvars, clauses, reduce_first=None if keep else 2000, minimize=minimize, proof=proof)
         model = solver.solve(max_conflicts)
         stats = solver.stats
+    if model is not None and removed:
+        model = extend(model, removed)
+    stats["eliminated"] = len(removed)
     stats["time"] = time.perf_counter() - start
     return model, stats
 
@@ -497,6 +566,7 @@ def main():
     ap.add_argument("--stats", action="store_true", help="print decisions, conflicts and time as c lines")
     ap.add_argument("--dpll", action="store_true", help="use the plain DPLL solver instead")
     ap.add_argument("--keep", action="store_true", help="never delete learned clauses")
+    ap.add_argument("--elim", action="store_true", help="remove variables by resolution before searching")
     ap.add_argument("--no-minimize", action="store_true", help="keep learned clauses as first-UIP analysis left them")
     ap.add_argument("--queens", type=int, metavar="N", help="place N queens on an N by N board")
     ap.add_argument("--sudoku", metavar="GRID", help="81 characters, '.' or '0' for blanks")
@@ -552,12 +622,12 @@ def main():
         ap.error("--proof needs the CDCL solver, not --dpll")
     proof = [] if args.proof else None
     model, stats = solve(nvars, clauses, "dpll" if args.dpll else "cdcl", keep=args.keep, minimize=not args.no_minimize,
-                         proof=proof)
+                         proof=proof, elim=args.elim)
     if args.proof:
         with open(args.proof, "w") as f:
             f.write("".join(line + "\n" for line in proof))
     if args.stats:
-        for key in ("decisions", "conflicts", "propagations", "learned", "minimized", "restarts", "deleted"):
+        for key in ("eliminated", "decisions", "conflicts", "propagations", "learned", "minimized", "restarts", "deleted"):
             if key in stats:
                 print(f"c {key} {stats[key]}")
         print(f"c time {stats['time']:.3f}s")

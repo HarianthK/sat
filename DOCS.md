@@ -586,4 +586,68 @@ and the deletion tables before minimization existed. I have not rerun them;
 pigeonhole 8 into 7, for one, took 3,654 conflicts, then 3,829 with deletion,
 and now 3,271 with minimization too. The minimization is MiniSat's recursive
 one; Glucose's extra pass with binary clauses is not here. There is no LBD
-update when a clause is used again, and no preprocessing.
+update when a clause is used again. The one preprocessing step is variable
+elimination, below; subsumption and the rest of SatELite are not here.
+
+## Variable elimination, which did not pay
+
+Resolution on a variable v takes a clause with v and one with -v and joins
+what is left of them: from `a b v` and `c -v`, the clause `a b c`. Replace
+every clause holding v with every resolvent and v is gone, and the formula is
+satisfiable exactly when the old one was. It usually grows, since p clauses
+with v and n with -v make up to p times n resolvents, so SatELite only does it
+when they are no more than the p + n clauses they replace, and none is longer
+than 20 literals. A variable with only one sign has no resolvents at all and
+goes for free, which is pure literal elimination falling out of the same rule.
+The cheapest variables are tried first, by p times n, and after each pass only
+those whose clauses changed are tried again.
+
+The search never sees v, so its answer leaves v at whatever value. Each
+eliminated variable keeps the clauses it had with v, and `extend` goes back
+through them newest first: v is false unless one of those clauses has every
+other literal false, then true. Both cannot be needed, since then the
+resolvent of the two clauses would be false as well, and the search satisfied
+every resolvent. Newest first matters because a variable eliminated early
+kept clauses that mention ones eliminated later, never the other way round.
+
+For proofs, each resolvent follows by unit propagation from its two parents,
+so it is written as an added clause before the parents are written as
+deleted, and the checker that reads the search's learned clauses sees the
+smaller formula exactly as the solver did.
+
+It does what it should. In gate-level circuits, where a gate's variable is
+defined by its inputs, it removes a third to a half of the variables: 1,495
+of 2,810 in SATLIB's bmc-ibm-2, 4,984 of 9,396 in bmc-ibm-5 (41,207 clauses
+down to 31,077). In planning formulas, which have no such definitions, it
+finds about ten. But fewer variables did not mean faster here, measured both
+ways in one process:
+
+| formula | conflicts | conflicts with --elim | seconds | with --elim |
+| --- | --- | --- | --- | --- |
+| two 64-bit adders, 8 shuffled copies | 13,690 | 12,453 | 4.0 | 3.6 |
+| 5-bit multiplier commutes, 8 copies | 19,376 | 19,888 | 8.1 | 7.4 |
+| 6-bit multiplier commutes, 8 copies | 88,566 | 101,539 | 61.0 | 63.5 |
+| bmc-ibm-2 | 44 | 21 | 0.07 | 0.45 |
+| bmc-ibm-5 | 132 | 185 | 0.3 | 1.4 |
+| bmc-ibm-13 | 14,917 | 23,496 | 55 | 63 |
+| bmc-ibm-3 | 1,782 | 1,797 | 4.5 | 4.8 |
+
+The SATLIB formulas are all satisfiable and mostly easy for this solver, so
+the second or two elimination takes in Python is the whole cost, and on the
+harder ones the conflict count moves by as much as a different shuffle of
+the same formula moves it. Where MiniSat gains from elimination it is paired
+with subsumption and run on formulas a hundred times larger. So it is off
+unless asked for. Elimination alone takes about a second on bmc-ibm-5, most
+of it building resolvents; looking up each literal's negation in a dict
+instead of a list took it from 1.21 to 1.05 seconds, measured in turn.
+
+Ten breakages fail the test. A wrong value for an eliminated variable (the
+rule inverted, the wrong sign's clauses kept, oldest first, or no values at
+all) loses a solution of a random formula, and resolvents left out of the
+proof make its check fail. With no bound, or tautologies kept, elimination
+runs until the test's two-minute limit stops it. Two were missed at first:
+stopping after one pass only finds fewer variables, which is still right,
+so now each random formula is eliminated again and nothing more may go; and
+the command line was checked for an `eliminated` line, which is printed with
+0 even when `--elim` is not passed on, so now it must not be 0.
+

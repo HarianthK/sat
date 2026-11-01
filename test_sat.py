@@ -470,6 +470,78 @@ finally:
             os.remove(name)
 print(f"{proofs} UNSAT proofs checked, {deletions} deletions in them; wrong proofs refused")
 
+# Variable elimination: the smaller formula must have a solution exactly when the original does, the
+# eliminated variables must be given values that satisfy the original, and UNSAT proofs must still check.
+rng = random.Random(11)
+gone = 0
+for _ in range(400):
+    nvars = rng.randint(2, 12)
+    clauses = random_3sat(rng, nvars, rng.randint(1, 6 * nvars)) if nvars >= 3 else [[1, -2], [2], [-1, 2]]
+    proof = []
+    model, stats = sat.solve(nvars, clauses, elim=True, proof=proof)
+    gone += stats["eliminated"]
+    # It stops only when no variable left can go: run again on what it left, and nothing more goes.
+    assert not sat.eliminate(nvars, sat.eliminate(nvars, clauses)[0])[1], f"elimination stopped early on {clauses}"
+    if all_models(nvars, clauses):
+        assert model is not None and satisfies(model, nvars, clauses), f"elimination lost the solution of {clauses}"
+    else:
+        assert model is None, f"elimination found a solution of an UNSAT formula {clauses}"
+        assert sat.check_proof(clauses, "\n".join(proof)) is None, f"elimination broke the proof of {clauses}"
+assert gone > 400, f"only {gone} variables eliminated in 400 formulas"
+
+
+def gates(k):
+    # Two ways to add k-bit numbers, each gate a fresh variable (Tseitin), and a clause saying some bit differs.
+    clauses, n = [], [2 * k]
+
+    def gate(kind, a, b):
+        n[0] += 1
+        g = n[0]
+        clauses.extend({"and": [[-g, a], [-g, b], [g, -a, -b]], "or": [[g, -a], [g, -b], [-g, a, b]],
+                        "xor": [[-g, a, b], [-g, -a, -b], [g, -a, b], [g, a, -b]]}[kind])
+        return g
+
+    def add(majority):
+        carry, out = None, []
+        for x, y in zip(range(1, k + 1), range(k + 1, 2 * k + 1)):
+            t = gate("xor", x, y)
+            out.append(t if carry is None else gate("xor", t, carry))
+            if carry is None:
+                carry = gate("and", x, y)
+            elif majority:
+                carry = gate("or", gate("or", gate("and", x, y), gate("and", x, carry)), gate("and", y, carry))
+            else:
+                carry = gate("or", gate("and", x, y), gate("and", t, carry))
+        return out + [carry]
+
+    clauses.append([gate("xor", a, b) for a, b in zip(add(True), add(False))])
+    return n[0], clauses
+
+
+# A gate's variable is defined by its inputs, which is what elimination removes best. The two adders always
+# agree, so the formula is UNSAT, and the proof through the eliminated formula must check against the original.
+nvars, clauses = gates(8)
+proof = []
+model, stats = sat.solve(nvars, clauses, elim=True, proof=proof)
+assert model is None and sat.check_proof(clauses, "\n".join(proof)) is None, "the adders proof failed"
+assert stats["eliminated"] > nvars // 3, f"{stats['eliminated']} of {nvars} gate variables eliminated"
+# One adder's output forced to 1 + 1 = 2: SAT, and the model must be the whole circuit's, every gate set right.
+nvars, clauses = gates(4)
+clauses = clauses[:-1] + [[1], [-2], [-3], [-4], [5], [-6], [-7], [-8]]
+model, stats = sat.solve(nvars, clauses, elim=True)
+assert stats["eliminated"] > 0 and model is not None and satisfies(model, nvars, clauses), "the adder's gates were set wrong"
+# A variable is kept when removing it would add clauses: three with 1 and three with -1 make nine resolvents.
+nvars, clauses = 7, [[1, 2], [1, 3], [1, 4], [-1, 5], [-1, 6], [-1, 7], [2, 3, 4, 5, 6, 7], [-2, -3, -4, -5, -6, -7]]
+left, removed = sat.eliminate(nvars, clauses)
+assert 1 not in [v for v, _ in removed], "a variable was eliminated although that made the formula bigger"
+# A variable with only one sign goes with all its clauses, and comes back set the way they need.
+left, removed = sat.eliminate(3, [[1, 2], [1, -3], [2, 3]])
+model = sat.extend([-1, -2, -3], removed)
+assert len(removed) == 2 and satisfies(model, 3, [[1, 2], [1, -3], [2, 3]]), model
+out = subprocess.run([sys.executable, sat.__file__, "--queens", "6", "--elim", "--stats"], capture_output=True, text=True)
+assert out.returncode == 10 and "c eliminated 0" not in out.stdout and "c eliminated " in out.stdout, out
+print(f"variable elimination: {gone} variables removed in 400 random formulas, every answer and proof still right")
+
 assert Checked.removed > 0, "minimization never removed a literal"
 print(f"{Checked.rounds} reductions checked, {Checked.deleted} learned clauses deleted, every answer still right")
 print(f"{Checked.removed} literals minimized away, each removal recomputed from the trail")

@@ -57,6 +57,13 @@ why as a new clause, so it never walked into that one again.
   propagation alone, so "no solution" can be checked like `--verify` checks a
   solution. It checks RUP steps only, which is all this solver writes; a
   proof from another solver that needs RAT is refused at that line.
+- Variable elimination before the search, `--elim`, as in SatELite: a variable
+  goes when resolving every clause with it against every clause with its
+  negation gives no more clauses than it removes. The eliminated variables
+  get their values back afterwards, and `--proof` still writes a proof that
+  checks against the original formula. It is off by default because here it
+  did not pay: it removes half the variables of SATLIB's IBM model-checking
+  formulas, and they are not solved faster. DOCS.md has the measurements.
 - Two encoders for fun: N-queens and Sudoku.
 
 ## How it compares
@@ -100,7 +107,7 @@ but took more conflicts on five of the ten and 46.9 seconds in all against
 
 ## Running it
 
-    python sat.py FILE.cnf [--stats] [--dpll] [--keep] [--no-minimize] [--proof OUT]
+    python sat.py FILE.cnf [--stats] [--dpll] [--keep] [--no-minimize] [--elim] [--proof OUT]
     python sat.py --queens N
     python sat.py --queens N --cnf > queens.cnf   # the formula itself, for any other solver
     python sat.py --queens 8 --count              # every solution: c solutions 92
