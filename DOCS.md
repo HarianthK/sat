@@ -651,3 +651,41 @@ so now each random formula is eliminated again and nothing more may go; and
 the command line was checked for an `eliminated` line, which is printed with
 0 even when `--elim` is not passed on, so now it must not be 0.
 
+## Assumptions, and which of them failed
+
+An assumption is a literal held true for one call to `solve`, not added as a
+clause. MiniSat does it the cheapest way: the first decisions are the
+assumptions, one level each, in order, before the heuristic picks anything.
+Nothing learned depends on them, because a learned clause follows from the
+clauses alone and a decision is never part of why, only where. So the same
+solver can be asked again with other assumptions and keeps every learned
+clause, which is what incremental use (bounded model checking, finding a
+minimal unsatisfiable set) relies on. `solve` starts with a jump to level 0
+for that reason, and a level-0 conflict now sets `ok` to false, since the
+second call would not find it again.
+
+An assumption that already holds still gets its own empty level, so level i
+is always assumption i and the next one to try is `assumptions[len(limits)]`.
+Leaving the empty level out made the index skip ahead and the test hang.
+Restarts jump to level 0 as before and then decide the assumptions again.
+
+When the next assumption p is already false, the search stops with no
+conflict to analyze. `failed`, MiniSat's analyzeFinal, walks the trail back
+from the top to level 1 through the reasons of everything p's falsity came
+from, and every decision it meets is an assumption, since nothing below p is
+anything else. Those and p are the core: the formula with just them true has
+no solution. It is not minimal, only no bigger than what propagation used; on
+the random tests 434 of 542 cores were smaller than the assumptions given. An
+empty core means the formula is UNSAT outright.
+
+`--assume` refuses `--elim`, which may remove an assumed variable, `--dpll`,
+which has no levels to put them on, and `--proof`, since an UNSAT answer
+under assumptions has no empty clause to end the proof in.
+
+The test asks one solver eight times on each of 150 random formulas, deleting
+every few conflicts, with 0 to 5 assumptions and sometimes a repeat, and checks
+each answer against brute force: a solution must hold every assumption, and a
+core must be made of assumptions and leave no solution when made true. Four
+breakages fail it: a core of p alone, a core that ignores reasons, no empty
+level for an assumption that already holds (the hang), and no jump back to
+level 0 before the next call.

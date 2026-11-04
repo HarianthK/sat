@@ -64,6 +64,11 @@ why as a new clause, so it never walked into that one again.
   checks against the original formula. It is off by default because here it
   did not pay: it removes half the variables of SATLIB's IBM model-checking
   formulas, and they are not solved faster. DOCS.md has the measurements.
+- Solving under assumptions, `--assume`, as in MiniSat: literals held true
+  for this one call only. If the formula has no solution with them, it names
+  the ones to blame (`c core 3 -7 0`), a subset that already fails on its own.
+  From Python, one `Solver` can be asked again and again with different
+  assumptions and keeps what it learned in between.
 - Two encoders for fun: N-queens and Sudoku.
 
 ## How it compares
@@ -107,13 +112,14 @@ but took more conflicts on five of the ten and 46.9 seconds in all against
 
 ## Running it
 
-    python sat.py FILE.cnf [--stats] [--dpll] [--keep] [--no-minimize] [--elim] [--proof OUT]
+    python sat.py FILE.cnf [--stats] [--dpll] [--keep] [--no-minimize] [--elim] [--assume LITS] [--proof OUT]
     python sat.py --queens N
     python sat.py --queens N --cnf > queens.cnf   # the formula itself, for any other solver
     python sat.py --queens 8 --count              # every solution: c solutions 92
     python sat.py f.cnf --verify answer.txt      # check any solver's s and v lines against f.cnf
     python sat.py f.cnf --proof f.drat           # UNSAT, with a proof of it
     python sat.py f.cnf --check-proof f.drat     # check that proof: c proof verified
+    python sat.py --queens 8 --assume "1 -2"     # with these literals true; if UNSAT, c core names the culprits
     python sat.py --sudoku 8..........36......7..9.2...5...7.......457.....1...3...1....68..85...1..9....4..
     python test_sat.py
 

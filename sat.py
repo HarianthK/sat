@@ -1,5 +1,5 @@
 # A CDCL SAT solver: watched literals, first-UIP learning and minimization, backjumping, VSIDS, Luby restarts, LBD deletion.
-# Run: python sat.py FILE.cnf [--stats] [--dpll] [--keep] [--no-minimize] [--elim] [--proof OUT] [--check-proof PROOF], or --queens N or --sudoku 81-CHARS
+# Run: python sat.py FILE.cnf [--stats] [--dpll] [--keep] [--no-minimize] [--elim] [--assume LITS] [--proof OUT] [--check-proof PROOF], or --queens N or --sudoku 81-CHARS
 import argparse
 import heapq
 import itertools
@@ -255,7 +255,23 @@ class Solver:
         self.stats["reductions"] += 1
         self.stats["deleted"] += len(gone)
 
-    def solve(self, max_conflicts=None):
+    def failed(self, p):
+        # MiniSat's analyzeFinal: the assumptions whose propagation made p false, p included.
+        core, seen = [p], {abs(p)}
+        for lit in reversed(self.trail[self.limits[0]:] if self.limits else []):
+            v = abs(lit)
+            if v not in seen:
+                continue
+            if self.reason[v] is None:
+                core.append(lit)  # every decision this low is an assumption
+            else:
+                seen.update(abs(q) for q in self.reason[v])
+        return core
+
+    def solve(self, max_conflicts=None, assumptions=()):
+        # With assumptions, None with self.core set means UNSAT given them; core [] means UNSAT outright.
+        self.core = []
+        self.backtrack(0)  # so the same solver can be asked again with other assumptions
         if not self.ok:
             self.note([])
             return None
@@ -267,6 +283,7 @@ class Solver:
                 since += 1
                 if not self.limits:
                     self.note([])  # the empty clause: a conflict with nothing decided
+                    self.ok = False
                     return None
                 if max_conflicts and stats["conflicts"] > max_conflicts:
                     raise RuntimeError(f"gave up after {max_conflicts} conflicts")
@@ -288,6 +305,14 @@ class Solver:
                 self.backtrack(0)
             elif self.next_reduce and stats["conflicts"] >= self.next_reduce:
                 self.reduce()
+            elif len(self.limits) < len(assumptions):
+                lit = assumptions[len(self.limits)]
+                if self.val[lit + self.n] == -1:
+                    self.core = self.failed(lit)
+                    return None
+                self.limits.append(len(self.trail))  # one level per assumption, empty if it already holds
+                if self.val[lit + self.n] == 0:
+                    self.assign(lit, None)
             else:
                 lit = self.pick()
                 if lit is None:
@@ -505,7 +530,8 @@ def extend(model, removed):
     return [v if v in true else -v for v in range(1, len(model) + 1)]
 
 
-def solve(nvars, clauses, method="cdcl", max_conflicts=None, keep=False, minimize=True, proof=None, elim=False):
+def solve(nvars, clauses, method="cdcl", max_conflicts=None, keep=False, minimize=True, proof=None, elim=False,
+          assume=()):
     start = time.perf_counter()
     removed = []
     if elim:
@@ -515,8 +541,9 @@ def solve(nvars, clauses, method="cdcl", max_conflicts=None, keep=False, minimiz
         model = dpll(nvars, clauses, stats)
     else:
         solver = Solver(nvars, clauses, reduce_first=None if keep else 2000, minimize=minimize, proof=proof)
-        model = solver.solve(max_conflicts)
+        model = solver.solve(max_conflicts, assume)
         stats = solver.stats
+        stats["core"] = solver.core
     if model is not None and removed:
         model = extend(model, removed)
     stats["eliminated"] = len(removed)
@@ -575,6 +602,8 @@ def main():
     ap.add_argument("--verify", metavar="ANSWER", help="check a solver's s and v output against the formula")
     ap.add_argument("--proof", metavar="FILE", help="write a DRAT proof of an UNSAT answer to FILE")
     ap.add_argument("--check-proof", metavar="FILE", help="check a DRUP proof that the formula has no solution")
+    ap.add_argument("--assume", metavar="LITS", help="solve with these literals held true, e.g. '3 -7'; "
+                    "if that is UNSAT, print the ones to blame")
     args = ap.parse_args()
     if args.queens:
         nvars, clauses = queens(args.queens)
@@ -620,9 +649,19 @@ def main():
         return
     if args.proof and args.dpll:
         ap.error("--proof needs the CDCL solver, not --dpll")
+    assume = []
+    if args.assume:
+        try:
+            assume = [int(t) for t in args.assume.replace(",", " ").split()]
+        except ValueError:
+            ap.error(f"--assume takes literals like '3 -7', not {args.assume!r}")
+        if any(not 0 < abs(l) <= nvars for l in assume):
+            ap.error(f"--assume: every literal must be a variable from 1 to {nvars}, with or without a minus")
+        if args.dpll or args.elim or args.proof:
+            ap.error("--assume works with the CDCL solver alone, without --elim or --proof")
     proof = [] if args.proof else None
     model, stats = solve(nvars, clauses, "dpll" if args.dpll else "cdcl", keep=args.keep, minimize=not args.no_minimize,
-                         proof=proof, elim=args.elim)
+                         proof=proof, elim=args.elim, assume=assume)
     if args.proof:
         with open(args.proof, "w") as f:
             f.write("".join(line + "\n" for line in proof))
@@ -633,6 +672,8 @@ def main():
         print(f"c time {stats['time']:.3f}s")
     if model is None:
         print("s UNSATISFIABLE")
+        if assume:
+            print("c core " + " ".join(map(str, stats["core"] + [0])))  # empty: UNSAT with no assumptions at all
         sys.exit(20)
     print("s SATISFIABLE")
     if args.queens:

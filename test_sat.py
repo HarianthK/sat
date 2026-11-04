@@ -542,6 +542,41 @@ out = subprocess.run([sys.executable, sat.__file__, "--queens", "6", "--elim", "
 assert out.returncode == 10 and "c eliminated 0" not in out.stdout and "c eliminated " in out.stdout, out
 print(f"variable elimination: {gone} variables removed in 400 random formulas, every answer and proof still right")
 
+# Assumptions: one solver asked again and again, each answer against brute force. A failed set must hold
+# only assumptions, and the formula with just those made true must have no solution.
+rng, failed, held, smaller = random.Random(11), 0, 0, 0
+for trial in range(150):
+    nvars = rng.randint(6, 12)
+    clauses = random_3sat(rng, nvars, rng.randint(2 * nvars, 5 * nvars))
+    models = all_models(nvars, clauses)
+    solver = sat.Solver(nvars, clauses, reduce_first=3)
+    for _ in range(8):
+        assume = [v if rng.random() < 0.5 else -v for v in rng.sample(range(1, nvars + 1), rng.randint(0, 5))]
+        assume += rng.sample(assume, min(len(assume), rng.randint(0, 1)))  # a repeat must not confuse it
+        model = solver.solve(BUDGET, assume)
+        if any(set(assume) <= set(m) for m in models):
+            assert model is not None and satisfies(model, nvars, clauses) and set(assume) <= set(model),                 f"missed a solution of {clauses} under {assume}"
+            held += 1
+        else:
+            core = solver.core
+            assert model is None and set(core) <= set(assume), f"core {core} is not part of {assume}"
+            assert not any(set(core) <= set(m) for m in models), f"core {core} of {assume} does not fail {clauses}"
+            assert core or not models, f"an empty core for a satisfiable formula {clauses}"
+            failed += 1
+            smaller += len(set(core)) < len(set(assume))
+assert failed > 100 and held > 100 and smaller > 20, (failed, held, smaller)
+# Both signs of one variable: the core is exactly that pair.
+solver = sat.Solver(3, [[1, 2, 3]])
+assert solver.solve(None, [2, -1, 1]) is None and sorted(solver.core) == [-1, 1], solver.core
+assert solver.solve(None, [-1, -2]) == [-1, -2, 3], "the solver did not recover after a failed call"
+out = subprocess.run([sys.executable, sat.__file__, "--queens", "4", "--assume", "1"], capture_output=True, text=True)
+assert out.returncode == 20 and "c core 1 0" in out.stdout, out
+out = subprocess.run([sys.executable, sat.__file__, "--queens", "4", "--assume", "2 -1"], capture_output=True, text=True)
+assert out.returncode == 10 and " 2 " in out.stdout.split("v ", 1)[1], out
+out = subprocess.run([sys.executable, sat.__file__, "--queens", "4", "--assume", "17"], capture_output=True, text=True)
+assert out.returncode == 2 and "from 1 to 16" in out.stderr, out
+print(f"assumptions: {held} answers held them, {failed} failed with a core, {smaller} cores smaller than the assumptions")
+
 assert Checked.removed > 0, "minimization never removed a literal"
 print(f"{Checked.rounds} reductions checked, {Checked.deleted} learned clauses deleted, every answer still right")
 print(f"{Checked.removed} literals minimized away, each removal recomputed from the trail")
