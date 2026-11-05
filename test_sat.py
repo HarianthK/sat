@@ -577,6 +577,33 @@ out = subprocess.run([sys.executable, sat.__file__, "--queens", "4", "--assume",
 assert out.returncode == 2 and "from 1 to 16" in out.stderr, out
 print(f"assumptions: {held} answers held them, {failed} failed with a core, {smaller} cores smaller than the assumptions")
 
+# Clauses added between solves: one solver, random clauses added after each answer, every answer
+# against brute force over the clauses so far, with the assumptions held.
+rng = random.Random(12)
+solves = 0
+for _ in range(60):
+    n = rng.randint(3, 9)
+    added = [[rng.choice([-1, 1]) * rng.randint(1, n) for _ in range(rng.randint(1, 3))] for _ in range(n)]
+    solver = sat.Solver(n, added)
+    for _ in range(8):
+        assume = list(dict.fromkeys(rng.choice([-1, 1]) * rng.randint(1, n) for _ in range(rng.randint(0, 3))))
+        model, models = solver.solve(BUDGET, assume), all_models(n, added)
+        if model is not None:
+            assert satisfies(model, n, added) and set(assume) <= set(model), (n, added, assume, model)
+        else:
+            assert not any(set(assume) <= set(m) for m in models), (n, added, assume)
+            assert not any(set(solver.core) <= set(m) for m in models), (n, added, assume, solver.core)
+        solves += 1
+        for _ in range(rng.randint(0, 3)):
+            added.append([rng.choice([-1, 1]) * rng.randint(1, n) for _ in range(rng.randint(1, 3))])
+            solver.add(added[-1])
+# A clause added after a solve, while the trail still holds that answer, must still be heard.
+solver = sat.Solver(2, [[1, 2]])
+first = solver.solve()
+solver.add([-lit for lit in first])
+assert solver.solve() not in (None, first)
+print(f"{solves} solves with clauses added between them agree with brute force")
+
 assert Checked.removed > 0, "minimization never removed a literal"
 print(f"{Checked.rounds} reductions checked, {Checked.deleted} learned clauses deleted, every answer still right")
 print(f"{Checked.removed} literals minimized away, each removal recomputed from the trail")

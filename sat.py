@@ -76,7 +76,9 @@ class Solver:
             self.add(c)
 
     def add(self, lits):
-        c = list(dict.fromkeys(lits))
+        # Clauses can be added between solves. At level 0 every value is permanent, so false literals go.
+        self.backtrack(0)
+        c = [l for l in dict.fromkeys(lits) if self.val[l + self.n] != -1]
         if any(-l in c for l in c):
             return  # always true
         if not c:
@@ -379,14 +381,14 @@ def dpll(nvars, clauses, stats=None):
 
 
 def count_models(nvars, clauses, limit=None):
-    # Every solution, found by solving again with each one forbidden by a clause it alone breaks.
-    clauses, found = list(clauses), 0
+    # Every solution, each then forbidden by a clause it alone breaks; one solver keeps what it learned.
+    solver, found = Solver(nvars, clauses), 0
     while limit is None or found < limit:
-        model, _ = solve(nvars, clauses)
+        model = solver.solve()
         if model is None:
             break
         found += 1
-        clauses.append([-lit for lit in model])
+        solver.add([-lit for lit in model])
     return found
 
 

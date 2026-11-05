@@ -689,3 +689,31 @@ core must be made of assumptions and leave no solution when made true. Four
 breakages fail it: a core of p alone, a core that ignores reasons, no empty
 level for an assumption that already holds (the hang), and no jump back to
 level 0 before the next call.
+
+## Adding clauses between solves
+
+Assumptions let one solver answer many questions about the same clauses.
+The other half of incremental solving, as in MiniSat, is adding clauses
+between calls. Everything learned stays true, since a learned clause follows
+from the clauses and adding more only removes solutions, so the solver keeps
+it all.
+
+`add` was written for building the solver, before any search, and needed two
+changes to be safe afterwards. It goes back to level 0 first: a solve that
+answers SAT leaves its whole answer on the trail, and a clause added on top
+of that would be watched by literals that are only false for now. And it
+drops the literals false at level 0. Propagation has already gone past those
+assignments, so a clause watching one of them would never be woken, and a
+unit or a conflict it should cause would be missed.
+
+`count_models` now uses this: one solver, and each solution, once found, is
+forbidden by a clause it alone breaks. Before, it built a new solver for each
+solution from a growing list of clauses. Alternated in one process, median of
+three: eight queens' 92 solutions take 0.24s instead of 6.88s, seven queens'
+40 take 0.04s instead of 0.48s.
+
+The test runs 480 solves on 60 solvers, adding up to three random clauses
+after each, with up to three assumptions, and checks each answer against
+brute force over the clauses so far. Two breakages fail it: no return to
+level 0 before adding, and keeping the literals false at level 0, which the
+two-minute watchdog catches as a hang while counting queens.

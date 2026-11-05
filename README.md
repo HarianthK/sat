@@ -68,7 +68,10 @@ why as a new clause, so it never walked into that one again.
   for this one call only. If the formula has no solution with them, it names
   the ones to blame (`c core 3 -7 0`), a subset that already fails on its own.
   From Python, one `Solver` can be asked again and again with different
-  assumptions and keeps what it learned in between.
+  assumptions and keeps what it learned in between, and can be given more
+  clauses between calls with `solver.add`. `--count` works that way: one
+  solver, each solution forbidden as it is found, counts the 92 eight-queens
+  solutions in 0.24s, against 6.9s with a new solver for each.
 - Two encoders for fun: N-queens and Sudoku.
 
 ## How it compares
