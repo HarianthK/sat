@@ -577,6 +577,37 @@ out = subprocess.run([sys.executable, sat.__file__, "--queens", "4", "--assume",
 assert out.returncode == 2 and "from 1 to 16" in out.stderr, out
 print(f"assumptions: {held} answers held them, {failed} failed with a core, {smaller} cores smaller than the assumptions")
 
+# Assumptions after elimination: their variables must not be eliminated, and each answer still holds
+# against brute force on the original formula.
+rng, failed, held, gone = random.Random(12), 0, 0, 0
+for trial in range(300):
+    nvars = rng.randint(3, 12)
+    clauses = random_3sat(rng, nvars, rng.randint(1, 5 * nvars))
+    models = all_models(nvars, clauses)
+    assume = [v if rng.random() < 0.5 else -v for v in rng.sample(range(1, nvars + 1), rng.randint(1, 3))]
+    model, stats = sat.solve(nvars, clauses, max_conflicts=BUDGET, elim=True, assume=assume)
+    gone += stats["eliminated"]
+    if any(set(assume) <= set(m) for m in models):
+        assert model is not None and satisfies(model, nvars, clauses) and set(assume) <= set(model), \
+            f"elimination lost the solution of {clauses} under {assume}: {model}"
+        held += 1
+    else:
+        core = stats["core"]
+        assert model is None and set(core) <= set(assume), f"core {core} is not part of {assume}"
+        assert not any(set(core) <= set(m) for m in models), f"core {core} of {assume} does not fail {clauses}"
+        failed += 1
+assert held > 100 and failed > 30 and gone > 300, (held, failed, gone)
+# Worked by hand: 2 and 3 have one sign each and would both go, but 3 is assumed false, so only 1 and 2 go.
+left, removed = sat.eliminate(3, [[1, 2], [-2, 3]], frozen={3})
+assert sorted(v for v, _ in removed) == [1, 2] and left == [], (left, removed)
+model, stats = sat.solve(3, [[1, 2], [-2, 3]], elim=True, assume=[-3])
+assert model == [1, -2, -3], model
+out = subprocess.run([sys.executable, sat.__file__, "--queens", "4", "--elim", "--assume", "1"], capture_output=True, text=True)
+assert out.returncode == 20 and "c core 1 0" in out.stdout, out
+out = subprocess.run([sys.executable, sat.__file__, "--queens", "4", "--elim", "--assume", "2 -1"], capture_output=True, text=True)
+assert out.returncode == 10 and " 2 " in out.stdout.split("v ", 1)[1], out
+print(f"assumptions with elimination: {held} answers held them, {failed} failed with a core, {gone} variables eliminated")
+
 # Clauses added between solves: one solver, random clauses added after each answer, every answer
 # against brute force over the clauses so far, with the assumptions held.
 rng = random.Random(12)

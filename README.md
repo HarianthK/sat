@@ -67,6 +67,8 @@ why as a new clause, so it never walked into that one again.
 - Solving under assumptions, `--assume`, as in MiniSat: literals held true
   for this one call only. If the formula has no solution with them, it names
   the ones to blame (`c core 3 -7 0`), a subset that already fails on its own.
+  It works with `--elim` too: the assumed variables are frozen, as MiniSat
+  freezes them, so elimination never removes one.
   From Python, one `Solver` can be asked again and again with different
   assumptions and keeps what it learned in between, and can be given more
   clauses between calls with `solver.add`. `--count` works that way: one

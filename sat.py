@@ -478,7 +478,7 @@ def resolvents(pos, neg, v):
                 yield list(r)
 
 
-def eliminate(nvars, clauses, proof=None, longest=20):
+def eliminate(nvars, clauses, proof=None, longest=20, frozen=()):
     # Bounded variable elimination, as in SatELite: a variable goes when the resolvents on it are no more
     # clauses than the ones holding it. Returns the clauses left and what extend() needs. DOCS.md has why.
     db, occurs, fresh, removed = {}, {l: set() for l in range(-nvars, nvars + 1)}, itertools.count(), []
@@ -495,7 +495,7 @@ def eliminate(nvars, clauses, proof=None, longest=20):
         queue, touched = sorted(touched, key=lambda v: len(occurs[v]) * len(occurs[-v])), set()
         for v in queue:
             here = occurs[v] | occurs[-v]
-            if not here:
+            if not here or v in frozen:  # an assumption's variable must survive, as MiniSat's frozen ones do
                 continue
             pos, neg = [db[i] for i in occurs[v]], [db[i] for i in occurs[-v]]
             added = list(itertools.islice(resolvents(pos, neg, v), len(here) + 1))
@@ -537,7 +537,7 @@ def solve(nvars, clauses, method="cdcl", max_conflicts=None, keep=False, minimiz
     start = time.perf_counter()
     removed = []
     if elim:
-        clauses, removed = eliminate(nvars, clauses, proof)
+        clauses, removed = eliminate(nvars, clauses, proof, frozen={abs(l) for l in assume})
     if method == "dpll":
         stats = {}
         model = dpll(nvars, clauses, stats)
@@ -659,8 +659,8 @@ def main():
             ap.error(f"--assume takes literals like '3 -7', not {args.assume!r}")
         if any(not 0 < abs(l) <= nvars for l in assume):
             ap.error(f"--assume: every literal must be a variable from 1 to {nvars}, with or without a minus")
-        if args.dpll or args.elim or args.proof:
-            ap.error("--assume works with the CDCL solver alone, without --elim or --proof")
+        if args.dpll or args.proof:
+            ap.error("--assume works with the CDCL solver alone, without --proof")
     proof = [] if args.proof else None
     model, stats = solve(nvars, clauses, "dpll" if args.dpll else "cdcl", keep=args.keep, minimize=not args.no_minimize,
                          proof=proof, elim=args.elim, assume=assume)

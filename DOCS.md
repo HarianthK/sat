@@ -678,8 +678,7 @@ no solution. It is not minimal, only no bigger than what propagation used; on
 the random tests 434 of 542 cores were smaller than the assumptions given. An
 empty core means the formula is UNSAT outright.
 
-`--assume` refuses `--elim`, which may remove an assumed variable, `--dpll`,
-which has no levels to put them on, and `--proof`, since an UNSAT answer
+`--assume` refuses `--dpll`, which has no levels to put them on, and `--proof`, since an UNSAT answer
 under assumptions has no empty clause to end the proof in.
 
 The test asks one solver eight times on each of 150 random formulas, deleting
@@ -717,3 +716,30 @@ after each, with up to three assumptions, and checks each answer against
 brute force over the clauses so far. Two breakages fail it: no return to
 level 0 before adding, and keeping the literals false at level 0, which the
 two-minute watchdog catches as a hang while counting queens.
+
+## Assumptions after elimination: frozen variables
+
+`--assume` used to refuse `--elim`, because elimination may remove an assumed
+variable. Then the solver would hold the assumption on a variable no clause
+mentions, and `extend` would afterwards give it whatever value the clauses it
+was taken from need, so a model could break its own assumption, or a formula
+with no solution under the assumptions could be called satisfiable. MiniSat's
+answer is to freeze such variables: `eliminate` now takes `frozen`, and
+`solve` passes the variables of every assumption, which elimination skips.
+
+That is enough for the core too. Assumptions are unit clauses on frozen
+variables, so eliminating any other variable from the formula with them
+added gives the eliminated formula with the same units added. The formula
+left after elimination fails under a set of assumptions exactly when the
+original does, and a core found on one is a core of the other.
+
+The test solves 300 random formulas with elimination and one to three
+assumptions, and checks each answer against brute force on the original
+formula: a model must satisfy it and hold every assumption, and a core must be
+made of assumptions and leave no solution. It also checks a formula worked by
+hand, `1 2` and `-2 3` with 3 assumed false, where 1 and 2 go but 3 stays and
+the only answer is 1, -2, -3, and the command line with `--queens 4 --elim
+--assume 1`. Eight breakages were tried and all eight fail it: frozen ignored,
+frozen inverted, only positive assumptions frozen, only the first one, none,
+no elimination at all under assumptions, the model not extended, and the
+command line still refusing the pair.
