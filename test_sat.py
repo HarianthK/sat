@@ -11,7 +11,7 @@ import sat
 
 BUDGET = 200000  # conflicts; a broken solver that loops fails here instead of hanging
 started = time.perf_counter()
-faulthandler.dump_traceback_later(120, exit=True)  # a hang fails, with a traceback of where
+faulthandler.dump_traceback_later(600, exit=True)  # a hang fails, with a traceback; 600s leaves room for a busy machine
 
 
 def satisfies(model, nvars, clauses):

@@ -222,7 +222,8 @@ Five of them passed or hung the first time, which is the useful part:
   had thousands of answers. It stops at 100 now.
 - A conflict not reported hung inside `propagate`, which a conflict budget
   cannot stop because no conflict is ever counted. `faulthandler` now kills the
-  test after 120 seconds with a traceback of where it was.
+  test after 600 seconds with a traceback of where it was. It was 120, but the
+  whole suite takes 90 to 150 seconds, so a busy machine tripped it with no hang.
 - The propagation count was only checked to be printed, not to be counted.
 
 One I caught before running it. The first decay check bumped two variables and
