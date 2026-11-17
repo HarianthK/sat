@@ -753,3 +753,20 @@ library before parsing. It goes by the file's first bytes, not its name, so a
 renamed file still works and a plain file whose name ends in `.gz` is not
 mangled. A truncated or corrupt archive is reported as a bad file, exit 1, with
 no traceback. The whole file is read into memory either way, as before.
+
+That last claim was only half tested. The test cut the archive short, which
+every codec reports as `EOFError` or `OSError`. A gzip file damaged in the
+middle raises `zlib.error` instead, which is neither, and it came out as a
+traceback. It is caught now, and the test flips a byte in each archive as well
+as cutting it.
+
+## What counts as a number
+
+The parser turned each token into a literal with `int()`, and Python's `int()`
+reads more than DIMACS allows: `1_2` is 12, `+1` is 1, and the digits of other
+scripts count too. So a file with a typo such as `1_2` was not refused, it was
+solved as a different formula, and the answer was for a problem nobody wrote.
+Tokens are now checked to be an optional minus and the digits 0 to 9 before
+`int()` sees them, and the clause count on the `p cnf` line, which was not
+looked at, must be a number too. It is still not compared with the number of
+clauses that follow, since real files get that wrong and solve fine.

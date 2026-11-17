@@ -8,6 +8,12 @@ import itertools
 import lzma
 import sys
 import time
+import zlib
+
+
+def digits(token):
+    # Plain 0-9 only: int() would also take "1_2", "+1" and the digits of other scripts.
+    return token.isascii() and token.isdecimal()
 
 
 def parse_dimacs(text):
@@ -20,17 +26,16 @@ def parse_dimacs(text):
             continue
         if line.startswith("p"):
             parts = line.split()
-            if len(parts) != 4 or parts[1] != "cnf" or not parts[2].isdigit():
+            if len(parts) != 4 or parts[1] != "cnf" or not (digits(parts[2]) and digits(parts[3])):
                 raise ValueError(f"line {number}: not a 'p cnf VARS CLAUSES' line: {line!r}")
             nvars = int(parts[2])
             continue
         if nvars is None:
             raise ValueError(f"line {number}: a clause before the 'p cnf' line")
         for token in line.split():
-            try:
-                lit = int(token)
-            except ValueError:
-                raise ValueError(f"line {number}: {token!r} is not a literal") from None
+            if not digits(token.removeprefix("-")):
+                raise ValueError(f"line {number}: {token!r} is not a literal")
+            lit = int(token)
             if lit == 0:
                 clauses.append(clause)
                 clause = []
@@ -624,13 +629,13 @@ def main():
     if args.queens:
         nvars, clauses = queens(args.queens)
     elif args.sudoku:
-        if len(args.sudoku) != 81:
-            sys.exit("sat: a sudoku is 81 characters")
+        if len(args.sudoku) != 81 or set(args.sudoku) - set("0123456789."):
+            sys.exit("sat: a sudoku is 81 characters, each a digit or '.'")
         nvars, clauses = sudoku(args.sudoku)
     elif args.file:
         try:
             nvars, clauses = parse_dimacs(read_cnf(args.file))
-        except (OSError, ValueError, EOFError, lzma.LZMAError) as e:
+        except (OSError, ValueError, EOFError, lzma.LZMAError, zlib.error) as e:
             sys.exit(f"sat: {args.file}: {e}")
     else:
         ap.error("give a CNF file, --queens or --sudoku")

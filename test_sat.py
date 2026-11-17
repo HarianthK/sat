@@ -137,7 +137,11 @@ p cnf 5 4
 assert sat.parse_dimacs(text) == (5, [[1, -2, 3], [-4], [5, -1], [2]]), sat.parse_dimacs(text)
 assert sat.parse_dimacs("p cnf 3 0\n") == (3, [])
 for bad, reason in (("1 2 0\n", "before"), ("p cnf 2 1\n1 3 0\n", "past"),
-                    ("p cnf 2 1\n1 x 0\n", "not a literal"), ("p cnf 2 1\n1 2\n", "closing 0"), ("c only\n", "no 'p cnf'")):
+                    ("p cnf 2 1\n1 x 0\n", "not a literal"), ("p cnf 2 1\n1 2\n", "closing 0"), ("c only\n", "no 'p cnf'"),
+                    # What Python's int() reads as a number and DIMACS does not: 1_2 was taken for 12.
+                    ("p cnf 12 1\n1_2 0\n", "not a literal"), ("p cnf 2 1\n+1 0\n", "not a literal"),
+                    ("p cnf 2 1\n١ 0\n", "not a literal"), ("p cnf 2 1\n--1 0\n", "not a literal"),
+                    ("p cnf 2 x\n1 0\n", "not a 'p cnf"), ("p cnf 1_0 1\n1 0\n", "not a 'p cnf")):
     try:
         sat.parse_dimacs(bad)
         raise AssertionError(f"accepted {bad!r}")
@@ -360,6 +364,15 @@ try:
             f.write(codec.compress(plain)[:40])
         out = subprocess.run([sys.executable, sat.__file__, "t-packed.cnf"], capture_output=True, text=True)
         assert out.returncode == 1 and "Traceback" not in out.stderr, (codec.__name__, out)
+        # Damaged in the middle, not cut short: gzip raises zlib.error here, which is no OSError.
+        packed = bytearray(codec.compress(plain))
+        packed[10] ^= 0xFF
+        with open("t-packed.cnf", "wb") as f:
+            f.write(packed)
+        out = subprocess.run([sys.executable, sat.__file__, "t-packed.cnf"], capture_output=True, text=True)
+        assert out.returncode == 1 and "Traceback" not in out.stderr, (codec.__name__, out)
+    out = subprocess.run([sys.executable, sat.__file__, "--sudoku", "x" * 81], capture_output=True, text=True)
+    assert out.returncode == 1 and "Traceback" not in out.stderr and "81 characters" in out.stderr, out
 finally:
     for name in ("t-sat.cnf", "t-unsat.cnf", "t-bad.cnf", "t-packed.cnf"):
         if os.path.exists(name):
