@@ -1,8 +1,11 @@
 # A CDCL SAT solver: watched literals, first-UIP learning and minimization, backjumping, VSIDS, Luby restarts, LBD deletion.
 # Run: python sat.py FILE.cnf [--stats] [--dpll] [--keep] [--no-minimize] [--elim] [--assume LITS] [--proof OUT] [--check-proof PROOF], or --queens N or --sudoku 81-CHARS
 import argparse
+import bz2
+import gzip
 import heapq
 import itertools
+import lzma
 import sys
 import time
 
@@ -40,6 +43,17 @@ def parse_dimacs(text):
     if clause:
         raise ValueError("the last clause has no closing 0")
     return nvars, clauses
+
+
+def read_cnf(path):
+    """The file's text, unpacked first if it is gzip, xz or bzip2, told apart by its first bytes."""
+    with open(path, "rb") as f:
+        data = f.read()
+    for magic, codec in ((b"\x1f\x8b", gzip), (b"\xfd7zXZ\x00", lzma), (b"BZh", bz2)):
+        if data.startswith(magic):
+            data = codec.decompress(data)
+            break
+    return data.decode()
 
 
 def luby(i):
@@ -615,9 +629,8 @@ def main():
         nvars, clauses = sudoku(args.sudoku)
     elif args.file:
         try:
-            with open(args.file) as f:
-                nvars, clauses = parse_dimacs(f.read())
-        except (OSError, ValueError) as e:
+            nvars, clauses = parse_dimacs(read_cnf(args.file))
+        except (OSError, ValueError, EOFError, lzma.LZMAError) as e:
             sys.exit(f"sat: {args.file}: {e}")
     else:
         ap.error("give a CNF file, --queens or --sudoku")

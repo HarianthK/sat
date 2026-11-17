@@ -744,3 +744,12 @@ the only answer is 1, -2, -3, and the command line with `--queens 4 --elim
 frozen inverted, only positive assumptions frozen, only the first one, none,
 no elimination at all under assumptions, the model not extended, and the
 command line still refusing the pair.
+
+## Compressed input
+
+SAT Competition benchmarks are published as `.cnf.xz`, and MiniSat reads gzip
+without being asked, so `read_cnf` unpacks gzip, xz and bzip2 with the standard
+library before parsing. It goes by the file's first bytes, not its name, so a
+renamed file still works and a plain file whose name ends in `.gz` is not
+mangled. A truncated or corrupt archive is reported as a bad file, exit 1, with
+no traceback. The whole file is read into memory either way, as before.

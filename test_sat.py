@@ -1,6 +1,9 @@
 # Run: python test_sat.py. Every SAT answer is checked clause by clause; every UNSAT one against brute force or mathematics.
 import bisect
+import bz2
 import faulthandler
+import gzip
+import lzma
 import os
 import random
 import subprocess
@@ -345,10 +348,23 @@ try:
     assert out.returncode == 20 and out.stdout.splitlines() == ["s UNSATISFIABLE"], out
     out = subprocess.run([sys.executable, sat.__file__, "t-bad.cnf"], capture_output=True, text=True)
     assert out.returncode == 1 and "past the 2 variables" in out.stderr and "Traceback" not in out.stderr, out
+    # Compressed copies, named .cnf so only the first bytes can say how to unpack them.
+    with open("t-unsat.cnf", "rb") as f:
+        plain = f.read()
+    for codec in (gzip, lzma, bz2):
+        with open("t-packed.cnf", "wb") as f:
+            f.write(codec.compress(plain))
+        out = subprocess.run([sys.executable, sat.__file__, "t-packed.cnf"], capture_output=True, text=True)
+        assert out.returncode == 20 and out.stdout.splitlines() == ["s UNSATISFIABLE"], (codec.__name__, out)
+        with open("t-packed.cnf", "wb") as f:
+            f.write(codec.compress(plain)[:40])
+        out = subprocess.run([sys.executable, sat.__file__, "t-packed.cnf"], capture_output=True, text=True)
+        assert out.returncode == 1 and "Traceback" not in out.stderr, (codec.__name__, out)
 finally:
-    for name in ("t-sat.cnf", "t-unsat.cnf", "t-bad.cnf"):
-        os.remove(name)
-print("the command line prints s and v lines, exits 10 or 20, and refuses a bad file")
+    for name in ("t-sat.cnf", "t-unsat.cnf", "t-bad.cnf", "t-packed.cnf"):
+        if os.path.exists(name):
+            os.remove(name)
+print("the command line prints s and v lines, exits 10 or 20, reads gzip, xz and bzip2, and refuses a bad file")
 
 # --cnf prints the formula instead of solving it: read back, it must be exactly the encoder's
 # clauses, and that file must then be solved like any other (six queens: satisfiable, exit 10).

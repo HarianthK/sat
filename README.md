@@ -118,6 +118,7 @@ but took more conflicts on five of the ten and 46.9 seconds in all against
 ## Running it
 
     python sat.py FILE.cnf [--stats] [--dpll] [--keep] [--no-minimize] [--elim] [--assume LITS] [--proof OUT]
+    python sat.py f.cnf.xz                        # gzip, xz and bzip2 files are unpacked as they are read
     python sat.py --queens N
     python sat.py --queens N --cnf > queens.cnf   # the formula itself, for any other solver
     python sat.py --queens 8 --count              # every solution: c solutions 92
