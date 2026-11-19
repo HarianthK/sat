@@ -141,12 +141,22 @@ for bad, reason in (("1 2 0\n", "before"), ("p cnf 2 1\n1 3 0\n", "past"),
                     # What Python's int() reads as a number and DIMACS does not: 1_2 was taken for 12.
                     ("p cnf 12 1\n1_2 0\n", "not a literal"), ("p cnf 2 1\n+1 0\n", "not a literal"),
                     ("p cnf 2 1\n١ 0\n", "not a literal"), ("p cnf 2 1\n--1 0\n", "not a literal"),
-                    ("p cnf 2 x\n1 0\n", "not a 'p cnf"), ("p cnf 1_0 1\n1 0\n", "not a 'p cnf")):
+                    ("p cnf 2 x\n1 0\n", "not a 'p cnf"), ("p cnf 1_0 1\n1 0\n", "not a 'p cnf"),
+                    # A second header used to replace the first, so "p cnf 9" let in a literal the first forbade.
+                    ("p cnf 2 1\n1 0\np cnf 9 1\n9 0\n", "second 'p cnf'")):
     try:
         sat.parse_dimacs(bad)
         raise AssertionError(f"accepted {bad!r}")
     except ValueError as e:
         assert reason in str(e), f"wanted {reason!r}, got {e!r}"
+# Editors on Windows may start a file with a byte-order mark, and a comment may hold any bytes.
+assert sat.parse_dimacs("﻿p cnf 2 1\n1 -2 0\n") == (2, [[1, -2]])
+with open("t-bytes.cnf", "wb") as f:
+    f.write(b"\xef\xbb\xbfc caf\xe9 in Latin-1\np cnf 2 1\n1 -2 0\n")
+try:
+    assert sat.parse_dimacs(sat.read_cnf("t-bytes.cnf")) == (2, [[1, -2]])
+finally:
+    os.remove("t-bytes.cnf")
 print("DIMACS parsed, and broken files refused with a reason")
 
 # Random 3-SAT around the phase transition, 4.26 clauses per variable, against brute force.

@@ -770,3 +770,11 @@ Tokens are now checked to be an optional minus and the digits 0 to 9 before
 `int()` sees them, and the clause count on the `p cnf` line, which was not
 looked at, must be a number too. It is still not compared with the number of
 clauses that follow, since real files get that wrong and solve fine.
+
+Three smaller things in the same place. A second `p cnf` line used to replace
+the first, so a file could declare 2 variables, then 9, and use 9; it is now
+an error. A byte-order mark, which some Windows editors write, hid the `p` of
+the first line and gave the misleading "a clause before the 'p cnf' line"; it
+is skipped. And a byte that is not UTF-8, say a Latin-1 accent in a comment,
+refused the whole file; such bytes now decode as a replacement character,
+which is harmless in a comment and still "not a literal" in a clause.

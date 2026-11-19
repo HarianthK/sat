@@ -18,13 +18,16 @@ def digits(token):
 
 def parse_dimacs(text):
     nvars, clauses, clause = None, [], []
-    for number, line in enumerate(text.splitlines(), 1):
+    # A byte-order mark would otherwise hide the "p" of the first line.
+    for number, line in enumerate(text.removeprefix("﻿").splitlines(), 1):
         line = line.strip()
         if line.startswith("%"):
             break  # SATLIB's uf files end with a "%" line and a stray 0
         if not line or line.startswith("c"):
             continue
         if line.startswith("p"):
+            if nvars is not None:
+                raise ValueError(f"line {number}: a second 'p cnf' line")
             parts = line.split()
             if len(parts) != 4 or parts[1] != "cnf" or not (digits(parts[2]) and digits(parts[3])):
                 raise ValueError(f"line {number}: not a 'p cnf VARS CLAUSES' line: {line!r}")
@@ -58,7 +61,8 @@ def read_cnf(path):
         if data.startswith(magic):
             data = codec.decompress(data)
             break
-    return data.decode()
+    # A stray byte in a comment is harmless; one in a clause still fails as "not a literal".
+    return data.decode(errors="replace")
 
 
 def luby(i):
